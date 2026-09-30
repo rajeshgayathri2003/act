@@ -14,6 +14,7 @@ from transformers.modeling_utils import PreTrainedModel
 from faiss.rag import retrieve_sample, flatten_emb
 from faiss.rag import DatasetRetriever
 from datasets import load_from_disk
+from detr.models.transformer import Transformer, RAGActionTransformer
 import math
 from dataclasses import dataclass
 import argparse
@@ -70,7 +71,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
-
 
 class ActionConfig(PretrainedConfig):
     model_type = "action_predictor"
@@ -253,6 +253,20 @@ class ActionModel(PreTrainedModel):
         self.query_proj = nn.Linear(64, 128)
         self.key_proj = nn.Linear(128, 768)
         self.action_proj = nn.Linear(192+64, 64)
+
+        # encoder-decoder transformer that maps the RAG latent tokens to an action chunk
+        transformer = Transformer(
+            d_model=256, nhead=8,
+            num_encoder_layers=4, num_decoder_layers=4,
+            dim_feedforward=1024, dropout=0.1,
+            normalize_before=False,
+            return_intermediate_dec=False,  # so [0] is the last decoder layer
+        )
+        self.act_head = RAGActionTransformer(
+            transformer, rag_dim=64, state_dim=9, n_rag_tokens=3,
+            action_dim=4, num_queries=20,
+        )
+        self.pad_loss_weight = 1.0  # weight of the is_pad BCE loss relative to the action L1 loss
         # self.gt_action_key = nn.Linear(8, 128)
         # self.gt_action_proj = nn.Linear(128, 192)
 
@@ -311,7 +325,7 @@ class ActionModel(PreTrainedModel):
     
         return torch.stack(basis, dim=0)  # (3, B, N)
     
-    def generate_latent(self, img, state, next_state, action_gt):
+    def generate_latent(self, img, state, next_state, action_gt, return_tokens=False):
         
         image_features = self.image_preprocessor_query(img)
         state_features = self.state_preprocessor_query(state)
@@ -344,12 +358,10 @@ class ActionModel(PreTrainedModel):
         if self.add_gt:
             key = torch.cat([key_gt, key], dim=1) #(10, 128)
         
-        # print("Key shape", key.shape)
-        
         sas_t = torch.cat((state, action_gt[:, 0, :].unsqueeze(1), next_state), dim=-1)
         
         sas = torch.cat((all_states, all_actions, all_next_states), dim=-1)
-        # print(sas.shape, sas_t.shape)
+
         if self.add_gt:
             sas = torch.cat((sas_t, sas), dim=1)  # (B, 9+1, 9+8+9)
             
@@ -365,19 +377,21 @@ class ActionModel(PreTrainedModel):
         attn_output = F.scaled_dot_product_attention(q, k, v)  # (B, 1, L, 192)
         
         attn_output = attn_output.squeeze(1)  # (B, L, 192)
-        # attn_output = attn_output.view(attn_output.shape[0], attn_output.shape[1], -1)  # (B, L, 128)
-        
+
         # Concatenate attention output with query and project to action dimension
         output = torch.cat([attn_output, q_stack], dim=-1)  # (B, L, 192 + 64)
         # print(output.shape)
         output = self.action_proj(output)  # (B, L, 64)
+        
+        if return_tokens:
+            return output, state
         
         # print(output.shape, state.shape)
         output = torch.cat([output.reshape(output.shape[0], -1), state.squeeze(1)], dim=-1)  # (B,  64*3+9)
         
         return output
     
-    def generate_latent_predict(self, img, state):
+    def generate_latent_predict(self, img, state, return_tokens=False):
         
         image_features = self.image_preprocessor_query(img)
         state_features = self.state_preprocessor_query(state)
@@ -400,17 +414,12 @@ class ActionModel(PreTrainedModel):
         all_img_embs = retrieved_val[1] 
         all_actions = retrieved_val[2][:, :, 0, :]
         all_next_states = retrieved_val[3]
-        
-        # print("Retrieved shapes - states:", all_states.shape, "actions:", all_actions.shape, "img_embs:", all_img_embs.shape, "next_states:", all_next_states.shape)
-        
+         
         img_key = self.image_preprocessor_query(all_img_embs.to(device))
         state_key = self.state_preprocessor_query(all_states.to(device))
     
         key = torch.cat([img_key, state_key], dim=-1) #(9, 128)
         key_gt = torch.cat([image_features, state_features], dim=-1) #(1, 128)
-        
-        # print("Key shape", key.shape, "GT key shape", key_gt.shape)
-        
         
         sas = torch.cat((all_states, all_actions, all_next_states), dim=-1)
             
@@ -428,41 +437,48 @@ class ActionModel(PreTrainedModel):
         
         # Concatenate attention output with query and project to action dimension
         output = torch.cat([attn_output, q_stack], dim=-1)  # (B, L, 192 + 64)
-        # print(output.shape)
         output = self.action_proj(output)  # (B, L, 64)
+
+        if return_tokens:
+            return output, state
 
         output = torch.cat([output.reshape(output.shape[0], -1), state.squeeze(1)], dim=-1)  # (B,  64*3+9)
         
         return output
         
-    def forward(self, img, state, next_state, action_gt, **kwargs):
-        #action as input
-        #encode image using SigLIP
-        # image_features = self.process_image(img)
-        
-        #Preprocess image and state
-        # Add this at the top of forward()
+    def forward(self, img, state, next_state, action_gt, is_pad=None, **kwargs):
         img = img.to(device)
         state = state.to(device)
         next_state = next_state.to(device)
         action_gt = action_gt.to(device)
 
-        output = self.generate_latent(img, state, next_state,action_gt)
-        # print(output.shape)
-        
-        #projecting the action to the right dimension
-        action_pred = self.action_preprocessor(output)
-        # print("action_pred shape", action_pred.shape, "action_gt shape", action_gt.shape)
-        action_pred = action_pred.view(action_pred.shape[0], self.T, -1)  # (4, 8)
-        # print("action_pred shape", action_pred.shape, "action_gt shape", action_gt.shape)
+        rag_tokens, state_tok = self.generate_latent(img, state, next_state, action_gt, return_tokens=True)
+        # rag_tokens: (B, 3, 64), state_tok: (B, 1, 9)
+
+        action_pred, is_pad_hat = self.act_head(rag_tokens, state_tok)  # (B, T, 4), (B, T, 1)
         #loss
         loss = None
+        l1 = None
         if action_gt is not None:
-            #changed from mse to l1 loss here
-            loss = F.l1_loss(action_pred, action_gt)
-    
-        return ActionModelOutput(loss=loss, mse_loss=loss.detach() if loss is not None else 0.0)
-    
+            if is_pad is None:
+                is_pad = torch.zeros(action_gt.shape[:2], dtype=torch.bool)
+            is_pad = is_pad.to(device)
+            #changed from mse to l1 loss here, only over the real (non-padded) timesteps
+            valid = (~is_pad).unsqueeze(-1).to(action_pred.dtype)  # (B, T, 1)
+            all_l1 = F.l1_loss(action_pred, action_gt.to(action_pred.dtype), reduction='none')
+            l1 = (all_l1 * valid).sum() / (valid.sum() * action_pred.shape[-1]).clamp(min=1)
+            #train is_pad_head to predict which timesteps of the chunk are padding
+            pad_loss = F.binary_cross_entropy_with_logits(is_pad_hat.squeeze(-1), is_pad.to(is_pad_hat.dtype))
+            loss = l1 + self.pad_loss_weight * pad_loss
+
+        return ActionModelOutput(loss=loss, mse_loss=l1.detach() if l1 is not None else 0.0)
+
+    @torch.no_grad()
+    def predict(self, img, state):
+        rag_tokens, state_tok = self.generate_latent_predict(img.to(device), state.to(device), return_tokens=True)
+        action_pred, _ = self.act_head(rag_tokens, state_tok)
+        return action_pred  # (B, T, 4)
+
 def data_collator(batch):
         # Stack the image and text embeddings
         images = torch.stack([torch.tensor(x['image_emb']) for x in batch])
@@ -471,10 +487,15 @@ def data_collator(batch):
         state = torch.stack([torch.tensor(x['state']) for x in batch])
         action = torch.stack([torch.tensor(x['action']) for x in batch])
         next_state = torch.stack([torch.tensor(x['next_state']) for x in batch])
-        # print("Batch shapes - images:", images.shape, "state:", state.shape, "action:", action.shape, "next_state:", next_state.shape)
-        # Return labels as empty string because without labels compute_loss_fn will not work
-        # torch.cat([images, texts], dim=0)
-        return {'img':images, 'state':state,'action_gt': action, 'next_state': next_state, 'labels': ""}
+        # Action chunks are zero-padded past the episode end (see data_encoder.py), so padded steps
+        # are the trailing all-zero rows. Use a stored 'is_pad' column instead if the dataset has one.
+        if 'is_pad' in batch[0]:
+            is_pad = torch.stack([torch.tensor(x['is_pad'], dtype=torch.bool) for x in batch])
+        else:
+            nonzero = (action != 0).any(dim=-1)  # (B, T)
+            is_pad = nonzero.flip(-1).int().cummax(dim=-1).values.flip(-1) == 0
+
+        return {'img':images, 'state':state,'action_gt': action, 'next_state': next_state, 'is_pad': is_pad, 'labels': ""}
     
 if __name__ == "__main__":
     

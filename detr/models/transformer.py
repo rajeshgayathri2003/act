@@ -285,10 +285,27 @@ class TransformerDecoderLayer(nn.Module):
         return self.forward_post(tgt, memory, tgt_mask, memory_mask,
                                  tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos)
 
+class RAGActionTransformer(nn.Module):
+    def __init__(self, transformer, rag_dim=64, state_dim=9, n_rag_tokens=3,
+                 action_dim=4, num_queries=20):
+        super().__init__()
+        self.transformer = transformer
+        d = transformer.d_model
+        self.rag_proj   = nn.Linear(rag_dim, d)
+        self.state_proj = nn.Linear(state_dim, d)
+        self.rag_pos    = nn.Embedding(n_rag_tokens + 1, d)   # 3 RAG tokens + 1 state token
+        self.query_embed = nn.Embedding(num_queries, d)       # decoder action-step positions
+        self.action_head = nn.Linear(d, action_dim)
+        self.is_pad_head = nn.Linear(d, 1)
+
+    def forward(self, rag_tokens, state):
+        # rag_tokens: (B, 3, 64), state: (B, 1, 9)
+        src = torch.cat([self.rag_proj(rag_tokens), self.state_proj(state)], dim=1)  # (B, 4, d)
+        hs = self.transformer(src, None, self.query_embed.weight, self.rag_pos.weight)[0]
+        return self.action_head(hs), self.is_pad_head(hs)
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
-
 
 def build_transformer(args):
     return Transformer(
