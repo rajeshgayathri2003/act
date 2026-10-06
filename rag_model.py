@@ -9,10 +9,10 @@ import mani_skill.envs
 from torchvision.models import vit_b_16, vit_l_16, ViT_B_16_Weights, ViT_L_16_Weights
 import torch
 from transformers import AutoModel, AutoTokenizer, AutoProcessor
-import tests.config as base_config
+import config as base_config
 from transformers.modeling_utils import PreTrainedModel
-from faiss.rag import retrieve_sample, flatten_emb
-from faiss.rag import DatasetRetriever
+from rag_retrieval.rag import retrieve_sample, flatten_emb
+from rag_retrieval.rag import DatasetRetriever
 from datasets import load_from_disk
 from detr.models.transformer import Transformer, RAGActionTransformer
 import math
@@ -249,7 +249,7 @@ class ActionModel(PreTrainedModel):
         self.sas_value = nn.Linear(9+4+9, 64)
         self.action_preprocessor = ActionPreprocessor(config)
         self.channels = nn.ModuleList(Channel(input_size=config.out_size_im + config.out_size_st) for i in range(3))
-        self.query_fetch = nn.Linear(128, 768)
+        self.query_fetch = nn.Linear(128, config.input_size_im)  # must match the retrieval index dim
         self.query_proj = nn.Linear(64, 128)
         self.key_proj = nn.Linear(128, 768)
         self.action_proj = nn.Linear(192+64, 64)
@@ -292,10 +292,10 @@ class ActionModel(PreTrainedModel):
             ).to(device)
         
         #generate values
-        self.dataset = load_from_disk(base_config.DEMONSTRATIONS_DIR_EE)
+        self.dataset = load_from_disk(base_config.DEMONSTRATIONS_DIR_EE_PUSH_CUBE_JEPA_IMAGE)
         self.dataset = self.dataset.map(flatten_emb)
         print("Dataset flattened")
-        self.dataset_retriever = DatasetRetriever(self.dataset, 768)
+        self.dataset_retriever = DatasetRetriever(self.dataset, self.config.input_size_im)
         print("Dataset retriever initialized")
     def process_image(self, img):
         image_input = self.processor(
@@ -481,12 +481,12 @@ class ActionModel(PreTrainedModel):
 
 def data_collator(batch):
         # Stack the image and text embeddings
-        images = torch.stack([torch.tensor(x['image_emb']) for x in batch])
+        images = torch.stack([torch.as_tensor(x['image_emb']) for x in batch])
         # print(images.shape)
-        # texts = torch.stack([torch.tensor(x['text_emb']) for x in batch])
-        state = torch.stack([torch.tensor(x['state']) for x in batch])
-        action = torch.stack([torch.tensor(x['action']) for x in batch])
-        next_state = torch.stack([torch.tensor(x['next_state']) for x in batch])
+        # texts = torch.stack([torch.as_tensor(x['text_emb']) for x in batch])
+        state = torch.stack([torch.as_tensor(x['state']) for x in batch])
+        action = torch.stack([torch.as_tensor(x['action']) for x in batch])
+        next_state = torch.stack([torch.as_tensor(x['next_state']) for x in batch])
         # Action chunks are zero-padded past the episode end (see data_encoder.py), so padded steps
         # are the trailing all-zero rows. Use a stored 'is_pad' column instead if the dataset has one.
         if 'is_pad' in batch[0]:
@@ -500,12 +500,12 @@ def data_collator(batch):
 if __name__ == "__main__":
     
     args = argparse.ArgumentParser()
-    args.add_argument("--log_dir", type=str, default=base_config.ACTION_LOGDIR, help="Directory of the for logging the training metrics and losses")
+    args.add_argument("--log_dir", type=str, default="/gayu-west/logs_rag_act", help="Directory for logging the training metrics and losses")
     args.add_argument("--model_dir", type=str, default=base_config.ACTION_MODEL, help="Directory of the model checkpoints")
     args.add_argument("--resume_from_checkpoint", action="store_true", help="Whether training should be resumed from a checkpoint")
     args = args.parse_args()
     
-    logging_dir = base_config.ACTION_LOGDIR.format(args.log_dir)
+    logging_dir = args.log_dir
     model_dir = base_config.ACTION_MODEL.format(args.model_dir)
     
     os.makedirs(logging_dir, exist_ok=True)
@@ -513,7 +513,8 @@ if __name__ == "__main__":
     
     
     #in ee action mode the number of actions is 4
-    action_config = ActionConfig(out_layers_ac=4)  
+    #JEPA image embeddings are 1280-dim
+    action_config = ActionConfig(out_layers_ac=4, input_size_im=1280)
     model = ActionModel(action_config)
     model.init_external()
     model.to(device)
@@ -521,6 +522,8 @@ if __name__ == "__main__":
     trainer_args = TrainingArguments(
         output_dir=model_dir,
         num_train_epochs=base_config.ACTION_TRAIN_EPOCHS,
+        dataloader_num_workers=4,
+        dataloader_pin_memory=True,
         per_device_train_batch_size=base_config.ACTION_BATCH_SIZE,
         save_steps=base_config.ACTION_SAVE_STEPS,
         save_total_limit=base_config.ACTION_SAVE_LIMIT,
@@ -557,7 +560,8 @@ if __name__ == "__main__":
         callback_object.mse_loss = 0.0
         return {"mse_loss": avg}    
 
-    dataset = load_from_disk(base_config.DEMONSTRATIONS_DIR_EE_PUSH_CUBE)
+    dataset = load_from_disk(base_config.DEMONSTRATIONS_DIR_EE_PUSH_CUBE_JEPA_IMAGE)
+    dataset.set_format(type="torch")
     print("Dataset loaded")
     trainer = Trainer(
         model=model,

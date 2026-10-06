@@ -20,7 +20,6 @@ ACTION_SAVE_STEPS = 10_000
 ACTION_SAVE_LIMIT = 2
 
 ACTION_LR = 1e-4
-ACTION_LOGDIR = "/gayu-west/logs_{}"
 ACTION_LOGDIR_ORTHO = "/gayu-west/logs_{}"
 ACTION_LOG_STEPS = 100
 

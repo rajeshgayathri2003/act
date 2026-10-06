@@ -9,7 +9,7 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.configuration_utils import PretrainedConfig
 import faiss
 import random
-import tests.config as base_config
+import config as base_config
 import faiss.contrib.torch_utils
 
 # import faiss.contrib.torch_utils
@@ -18,7 +18,6 @@ from abc import ABC, abstractmethod
 
 #Method 1
 from datasets import load_from_disk
-import tests.config
 import numpy as np
 from abc import ABC, abstractmethod
 
@@ -80,10 +79,11 @@ class DatasetRetriever(IRetriever):
         
         _, examples = self.index.search(q, neighbor_count) #(B*channels, neighbor_count)
         
-        indices = examples.reshape(shape[0], shape[1], neighbor_count).cpu()  # small index tensor, cheap to move
-        
+        # keep indices on the GPU: .cpu() forces a sync every forward pass
+        indices = examples.reshape(shape[0], shape[1], neighbor_count)
+
         sample_val = neighbor_count // 2
-        sample_idx = torch.randperm(neighbor_count)[:sample_val]
+        sample_idx = torch.randperm(neighbor_count, device=indices.device)[:sample_val]
         
         sampled_indices = indices[:, :, sample_idx]  # (B, channels, sample_val)
         
