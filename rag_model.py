@@ -16,6 +16,7 @@ from rag_retrieval.rag import DatasetRetriever
 from datasets import load_from_disk
 from detr.models.transformer import Transformer, RAGActionTransformer
 import math
+import numpy as np
 from dataclasses import dataclass
 import argparse
 import os
@@ -192,6 +193,12 @@ class ActionCallback(TrainerCallback):
         self.mse_loss = 0
         self.add_gt = True  # boolean flag to include GT values
 
+    def on_step_begin(self, args, state, control, optimizer=None, **kwargs):
+        """Pin the LR every step; overrides the checkpointed optimizer/scheduler state."""
+        if optimizer is not None:
+            for group in optimizer.param_groups:
+                group["lr"] = 1e-5
+
     def on_optimizer_step(self, args, state, control, **kwargs):
         model = trainer.model
         lr = trainer.args.learning_rate
@@ -225,12 +232,11 @@ class ActionCallback(TrainerCallback):
     def on_log(self, args, state, control, **kwargs):
         logs = kwargs.get("logs")
         if logs is not None:
-            avg_mse = self.mse_loss / self.counter if self.counter > 0 else 0
-            logs["mse_loss"] = avg_mse
-            # Also set eval_mse_loss for the scheduler during evaluation
-            logs["eval_mse_loss"] = avg_mse
-        # self.counter = 0
-        # self.mse_loss = 0
+            if self.counter > 0:
+                # training average since the last log
+                logs["mse_loss"] = self.mse_loss / self.counter
+                self.counter = 0
+                self.mse_loss = 0
 
 class ActionModel(PreTrainedModel):
     r"""
@@ -278,8 +284,13 @@ class ActionModel(PreTrainedModel):
         self.T = 20
         self.add_gt = True  # boolean flag: whether to include GT values based on training progress
 
-    def init_external(self):
-        """Load CLIP model, dataset, and FAISS index. Call after from_pretrained or before training."""
+    def init_external(self, indices=None):
+        """Load CLIP model, dataset, and FAISS index. Call after from_pretrained or before training.
+
+        Args:
+            indices: optional row indices to build the retrieval index from (e.g. the train split),
+                so held-out rows can't be retrieved. Defaults to the full dataset.
+        """
         if self.dataset_retriever is not None:
             return  # already initialized
         self.processor = AutoProcessor.from_pretrained(base_config.CLIP_MODEL, use_fast=True)
@@ -293,6 +304,8 @@ class ActionModel(PreTrainedModel):
         
         #generate values
         self.dataset = load_from_disk(base_config.DEMONSTRATIONS_DIR_EE_PUSH_CUBE_JEPA_IMAGE)
+        if indices is not None:
+            self.dataset = self.dataset.select(indices)
         self.dataset = self.dataset.map(flatten_emb)
         print("Dataset flattened")
         self.dataset_retriever = DatasetRetriever(self.dataset, self.config.input_size_im)
@@ -355,14 +368,16 @@ class ActionModel(PreTrainedModel):
         key = torch.cat([img_key, state_key], dim=-1) #(9, 128)
         key_gt = torch.cat([image_features, state_features], dim=-1) #(1, 128)
         
-        if self.add_gt:
+        # never feed GT during evaluation
+        use_gt = self.add_gt and self.training
+        if use_gt:
             key = torch.cat([key_gt, key], dim=1) #(10, 128)
         
         sas_t = torch.cat((state, action_gt[:, 0, :].unsqueeze(1), next_state), dim=-1)
         
         sas = torch.cat((all_states, all_actions, all_next_states), dim=-1)
 
-        if self.add_gt:
+        if use_gt:
             sas = torch.cat((sas_t, sas), dim=1)  # (B, 9+1, 9+8+9)
             
         sas_value = self.sas_value(sas) # (B, 10, 64)
@@ -512,11 +527,23 @@ if __name__ == "__main__":
     os.makedirs(model_dir, exist_ok=True)
     
     
+    #frame-level train/eval split, seeded so resumed runs see the same split
+    dataset = load_from_disk(base_config.DEMONSTRATIONS_DIR_EE_PUSH_CUBE_JEPA_IMAGE)
+    perm = np.random.default_rng(base_config.ACTION_SPLIT_SEED).permutation(len(dataset))
+    n_eval = int(len(dataset) * base_config.ACTION_EVAL_FRACTION)
+    eval_idx, train_idx = np.sort(perm[:n_eval]), np.sort(perm[n_eval:])
+    train_dataset = dataset.select(train_idx)
+    eval_dataset = dataset.select(eval_idx)
+    train_dataset.set_format(type="torch")
+    eval_dataset.set_format(type="torch")
+    print(f"Dataset loaded: {len(train_dataset)} train / {len(eval_dataset)} eval frames")
+
     #in ee action mode the number of actions is 4
     #JEPA image embeddings are 1280-dim
     action_config = ActionConfig(out_layers_ac=4, input_size_im=1280)
     model = ActionModel(action_config)
-    model.init_external()
+    #retrieval index only holds train frames so eval frames can't retrieve themselves
+    model.init_external(indices=train_idx)
     model.to(device)
     
     trainer_args = TrainingArguments(
@@ -525,6 +552,11 @@ if __name__ == "__main__":
         dataloader_num_workers=4,
         dataloader_pin_memory=True,
         per_device_train_batch_size=base_config.ACTION_BATCH_SIZE,
+        per_device_eval_batch_size=base_config.ACTION_BATCH_SIZE,
+        prediction_loss_only=True,
+        # forward() has no 'labels' argument, so the Trainer never computed a loss at eval time and
+        # compute_loss_fn never filled eval_mse; naming a real input key makes has_labels True
+        label_names=["action_gt"],
         save_steps=base_config.ACTION_SAVE_STEPS,
         save_total_limit=base_config.ACTION_SAVE_LIMIT,
         logging_dir=logging_dir,
@@ -532,46 +564,56 @@ if __name__ == "__main__":
         report_to="tensorboard",
         learning_rate=base_config.ACTION_LR,
         lr_scheduler_type="reduce_lr_on_plateau",
+        # the scheduler steps once per evaluation, so patience counts evals (every ACTION_EVAL_STEPS)
         lr_scheduler_kwargs={
             "factor": 0.1,      # multiply LR by this on plateau
-            "patience": 2,      # epochs without improvement before reducing
-            "threshold": 1e-3,  # min change to count as improvement
+            "patience": 5,      # evals without improvement before reducing (~5000 steps, ~23 epochs)
+            "threshold": 1e-3,  # min relative change to count as improvement
+            "min_lr": 1e-5,     # stop decaying after two reductions from 1e-4
         },
         metric_for_best_model="mse_loss",
         remove_unused_columns=False,
         no_cuda=False,
-        eval_strategy="epoch",
+        eval_strategy="steps",
+        eval_steps=base_config.ACTION_EVAL_STEPS,
         greater_is_better=False
     )
 
     callback_object = ActionCallback()
 
+    eval_mse = {"sum": 0.0, "count": 0}
+
     def compute_loss_fn(outputs, labels, num_items_in_batch):
-        callback_object.counter += 1
         mse_val = outputs.mse_loss.item() if hasattr(outputs.mse_loss, 'item') else float(outputs.mse_loss)
-        callback_object.mse_loss += mse_val
+        # keep train and eval batches in separate accumulators
+        if model.training:
+            callback_object.counter += 1
+            callback_object.mse_loss += mse_val
+        else:
+            eval_mse["count"] += 1
+            eval_mse["sum"] += mse_val
         # callback_object.recon_loss += outputs.recon_loss
         return outputs.loss
-    
-    def compute_metrics(eval_pred):
-        avg = float(callback_object.mse_loss / callback_object.counter) if callback_object.counter > 0 else 0.0
-        avg = float(avg)  # ensure it's a plain Python float
-        callback_object.counter = 0
-        callback_object.mse_loss = 0.0
-        return {"mse_loss": avg}    
 
-    dataset = load_from_disk(base_config.DEMONSTRATIONS_DIR_EE_PUSH_CUBE_JEPA_IMAGE)
-    dataset.set_format(type="torch")
-    print("Dataset loaded")
-    trainer = Trainer(
+    class ActionTrainer(Trainer):
+        def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
+            """Add eval_mse_loss to the returned metrics; the LR scheduler and best-checkpoint tracking read it."""
+            eval_mse["sum"], eval_mse["count"] = 0.0, 0
+            metrics = super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
+            if eval_mse["count"] > 0:
+                key = f"{metric_key_prefix}_mse_loss"
+                metrics[key] = eval_mse["sum"] / eval_mse["count"]
+                self.log({key: metrics[key]})
+            return metrics
+
+    trainer = ActionTrainer(
         model=model,
         args=trainer_args,
         data_collator=data_collator,
-        train_dataset=dataset,
-        eval_dataset=dataset, 
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         callbacks=[callback_object],
         compute_loss_func=compute_loss_fn,
-        compute_metrics=compute_metrics,
     )
     print("Starting training...")
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)  

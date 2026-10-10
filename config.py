@@ -14,10 +14,13 @@ ENCODER_LAYERS = 3
 DECODER_LAYERS = 6
 
 ACTION_MODEL = "/gayu-west/action_model_{}"
-ACTION_TRAIN_EPOCHS = 1000
-ACTION_BATCH_SIZE = 64
+ACTION_TRAIN_EPOCHS = 1500
+ACTION_BATCH_SIZE = 512
 ACTION_SAVE_STEPS = 10_000
 ACTION_SAVE_LIMIT = 2
+ACTION_EVAL_STEPS = 1000        # ~4.6 epochs at batch 256; divides ACTION_SAVE_STEPS
+ACTION_EVAL_FRACTION = 0.2      # fraction of frames held out for validation
+ACTION_SPLIT_SEED = 42          # fixed so resumed runs get the same split
 
 ACTION_LR = 1e-4
 ACTION_LOGDIR_ORTHO = "/gayu-west/logs_{}"
@@ -50,3 +53,4 @@ DEMONSTRATIONS_DIR_EE_PUSH_CUBE = "/gayu-west/data_ee_push_cube"
 DEMONSTRATIONS_DIR_EE_PUSH_CUBE_DINO = "/gayu-west/data_ee_push_cube_dino"
 DEMONSTRATIONS_DIR_EE_PUSH_CUBE_JEPA = "/gayu-west/data_ee_push_cube_jepa"
 DEMONSTRATIONS_DIR_EE_PUSH_CUBE_JEPA_IMAGE = "/gayu-west/data_ee_push_cube_jepa_image"
+DEMONSTRATIONS_DIR_EE_PUSH_CUBE_RESNET_IMAGE = "/gayu-west/data_ee_push_cube_resnet_image"
