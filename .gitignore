@@ -140,8 +140,8 @@ dmypy.json
 .pyre/
 # uv
 .venv/
-# agent notes, kept local
-.agents/
+# notes and files for one machine only, e.g. .agents/.local/
+.local/
 # training output, checkpoints, eval videos and wandb's local files
 runs/
 wandb/
