@@ -138,3 +138,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+# uv
+.venv/
+# agent notes, kept local
+.agents/
+# training output, checkpoints, eval videos and wandb's local files
+runs/
+wandb/
+# ragmani's data package is code; the "data" rule above is for ACT's recorded episodes
+!ragmani/data/

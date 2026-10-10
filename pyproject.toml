@@ -1,0 +1,46 @@
+[project]
+name = "act"
+version = "0.0.0"
+description = "ACT with retrieval (RAG) over ManiSkill demonstrations"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "torch",
+  "torchvision",
+  "numpy",
+  "faiss-cpu",
+  "transformers",
+  "accelerate>=0.26.0", # required by the HF Trainer in rag_model.py
+  "sentencepiece", # SigLIP tokenizer
+  "datasets",
+  "h5py",
+  "mani_skill",
+  "gymnasium",
+  "mujoco==2.3.7", # ALOHA sim versions from README.md
+  "dm_control==1.0.14",
+  "pyquaternion",
+  "pyyaml",
+  "opencv-python",
+  "matplotlib",
+  "seaborn",
+  "pandas",
+  "einops",
+  "packaging",
+  "ipython",
+  "tqdm",
+  "detr",
+  "pin>=4.1.0",
+  "wandb",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+detr = { path = "detr", editable = true }
+torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
