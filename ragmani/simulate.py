@@ -1,7 +1,7 @@
 """Runs a trained RagAct in the sim on fresh layouts and records success and video, as Gayathri's test.py does.
 
 Every episode runs at once in ManiSkill's parallel envs, rebuilt from the run's own config.yaml.
-Run from act/ as `python -m ragmani.simulate runs/<run> [--checkpoint checkpoint-N] [--episodes N] [--max_steps N]`.
+Run from act/ as `uv run python -m ragmani.simulate runs/<run> [--checkpoint checkpoint-N] [--episodes N] [--max_steps N]`.
 """
 import argparse
 import json
@@ -63,7 +63,7 @@ def episodes(model, retriever, encoder, env, seeds, max_steps=MAX_STEPS, executi
     images = frames.render(env)
     embeddings, qpos = encoder.embed(images).to(device), observation["agent"]["qpos"].to(device).float()
     chunk, _, _ = model(embeddings, qpos, retriever)
-    chunk = chunk * model.action_scale[1] + model.action_scale[0]  # back to the controller's units
+    chunk = chunk * model.action.std + model.action.mean  # back to the controller's units
     chunks = [*chunks, (step, chunk)][-chunk.shape[1]:]  # only chunks that still cover this step
     action = EXECUTIONS[execution](chunks, step)
     observation, reward, terminated, _, info = env.step(action.to(env.device))  # the unwrapped env never truncates; max_steps does

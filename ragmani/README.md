@@ -1,6 +1,6 @@
 # ragmani
 
-Retrieval-augmented ACT on ManiSkill: encode demos into embeddings, train a policy that retrieves similar demo steps and attends over them, then run it in the sim and record success and video. It restructures the `rag_model.py` pipeline and what was tried around it into one package that is easier to read and for several people to work on. The original files at the repo root are untouched, and ragmani reads their datasets and checkpoints.
+Retrieval-augmented ACT on ManiSkill: encode demos into embeddings, train a policy that retrieves similar demo steps and attends over them, then run it in the sim and record success and video. It restructures the `rag_model.py` pipeline and what was tried around it into one package that is easier to read and for several people to work on. The original files at the repo root are untouched, and ragmani reads their datasets.
 
 ## Setup
 
@@ -57,18 +57,9 @@ Two evaluations exist. **Eval** is the Trainer's held-out loss (`eval/loss`): pr
 
 ## Config
 
-`config/push_cube.yaml` holds one experiment. Its values reproduce `rag_model.py` at commit 8b9a9e3, and each switch's comment names the alternative (`train.split`, `train.exclude_own_episode`, `train.truth_sampling`, `train.truth_schedule`, `model.keep_sampling`, `model.query`, `train.lr_scheduler`). The one difference it cannot reach is embedding normalization: `rag_model.py`'s data was not normalized, so matching it needs `encoder.normalize=false` when encoding.
+`config/push_cube.yaml` holds one experiment. Its values reproduce `rag_model.py` at commit 8b9a9e3, and each switch's comment names the alternative (`train.split`, `train.exclude_own_episode`, `train.lr_scheduler`). Three differences it cannot reach: `query_fetch` trains here, through `CopyGrad`, where `rag_model.py`'s search left it untrained; the 3 of 6 neighbours kept and the truth row are drawn per row, where `rag_model.py` drew each once per batch, and eval and simulate keep the nearest 3 rather than a random 3; and embedding normalization, since `rag_model.py`'s data was not normalized, so matching it needs `encoder.normalize=false` when encoding.
 
-Datasets and checkpoints from `rag_model.py` load directly; `data.load` and `RagAct.load` convert them. Runs saved before a setting existed simulate with `push_cube.yaml`'s value for it.
-
-## Sweeps
-
-`config/sweeps/` holds W&B grid sweeps that A/B test one change at a time from a base. Each run's `test` value is a single override, applied last, and names the run's folder.
-
-```sh
-uv run wandb sweep ragmani/config/sweeps/query_normalize_lr_clipping_decay_scores_truth.yaml   # prints the sweep id
-uv run wandb agent --forward-signals ragmani/ragmani/<sweep-id>
-```
+Datasets from `rag_model.py` load directly; `data.load` converts them. Runs saved before a setting existed simulate with `push_cube.yaml`'s value for it.
 
 ## Layout
 

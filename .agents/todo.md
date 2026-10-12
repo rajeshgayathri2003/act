@@ -11,14 +11,13 @@ kind: todo
 | section | line |
 |---|---|
 | Next | 19 |
-| Ideas | 24 |
+| Ideas | 23 |
 
 <!-- /map -->
 
 
 ## Next
 
-- [ ] Run the `query_normalize_lr_clipping_decay_scores_truth` sweep on Nautilus (`config/sweeps/`): which of observation_100's five changes made it succeed ([[learned]]). One seed, 20 layouts; compare the arms' `training_success_rate` curves.
 - [ ] Docker image for ragmani (teammate); the README's Requirements table is the spec.
 
 ## Ideas
