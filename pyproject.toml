@@ -7,7 +7,8 @@ dependencies = [
   "torch",
   "torchvision",
   "numpy",
-  "faiss-cpu",
+  "faiss-cpu; sys_platform != 'linux' or platform_machine != 'x86_64'",
+  "faiss-gpu; sys_platform == 'linux' and platform_machine == 'x86_64'", # CUDA 12 runtime wheels; no aarch64 GPU build
   "transformers",
   "accelerate>=0.26.0", # required by the HF Trainer in rag_model.py
   "sentencepiece", # SigLIP tokenizer
@@ -27,8 +28,10 @@ dependencies = [
   "packaging",
   "ipython",
   "tqdm",
+  "imageio[ffmpeg]", # ragmani's mp4 videos
+  "safetensors", # ragmani saves and loads checkpoints with it
   "detr",
-  "pin>=4.1.0",
+  "pin>=4.1.0", # Pinocchio IK for pd_ee_delta_pos; SAPIEN's macOS wheel ships without it
   "wandb",
 ]
 

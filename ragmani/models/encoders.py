@@ -1,4 +1,4 @@
-"""Image encoders that turn rendered frames into the embeddings retrieval and the models consume.
+"""Image encoders that turn rendered frames into the embeddings that retrieval and the models consume.
 
 Subclasses differ only in the vision model and how its output pools to one vector, so encoders compare on equal terms.
 """
@@ -28,7 +28,8 @@ class Encoder(ABC):
   @torch.inference_mode()
   def embed(self, images):
     inputs = self.processor(images=list(images), return_tensors="pt").to(self.device)
-    embeddings = self.pool(self.model(**inputs)).float()
+    with torch.autocast(torch.device(self.device).type, dtype=getattr(torch, self.config.precision), enabled=self.config.precision != "float32"):
+      embeddings = self.pool(self.model(**inputs)).float()
     if self.config.normalize: embeddings = F.normalize(embeddings, dim=-1)  # retrieval searches by inner product
     return embeddings.cpu()
 

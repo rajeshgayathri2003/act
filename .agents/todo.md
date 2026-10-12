@@ -18,14 +18,16 @@ kind: todo
 
 ## Next
 
-- [ ] Test the self-retrieval explanation in [[learned]]: 100 epochs with `train.split=episode train.exclude_own_episode=true`, simulate it, compare with old_state_100 (0/10).
+- [ ] Run the `query_normalize_lr_clipping_decay_scores_truth` sweep on Nautilus (`config/sweeps/`): which of observation_100's five changes made it succeed ([[learned]]). One seed, 20 layouts; compare the arms' `training_success_rate` curves.
 - [ ] Docker image for ragmani (teammate); the README's Requirements table is the spec.
 
 ## Ideas
 
 Comparisons to show a change actually improves success in simulate, not just eval loss.
 
-- Exact retrieval against FAISS IVF on the real embeddings: speed, recall, and whether it changes success.
-- Temporal ensembling of action chunks at simulate time, as ACT does, against executing only the first action.
+- Temporal ensembling against executing only the first action (`simulate --execution first`), once a model succeeds often enough for the difference to show.
+- Generalize past PushCube to other ManiSkill tasks (pulling, opening) once one task works, with more simulate layouts then.
+- tyro as the config tool: typed dataclasses per class, experiments as Python presets with `--help`. Not worth it while the yaml plus `section.key=value` overrides stay small; revisit when config mistakes cost runs or presets multiply.
 - Separate key encoders against the shared ones (rag_model.py built unused `_value` encoders).
-- Raw against normalized I-JEPA embeddings, and SigLIP against I-JEPA.
+- SigLIP and other encoders against I-JEPA (a teammate is comparing encoders).
+- Retrieve by motion, not one frame: key each row by an embedding of several consecutive frames (I-JEPA over a short clip, or the current and previous frame's embeddings together), so a lookup finds demos that were moving the same way along the same path. One frame cannot show direction, and state plus step is not the same thing. Needs re-encoding the dataset with frame windows.

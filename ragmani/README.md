@@ -26,7 +26,7 @@ What a machine or container needs, however it is set up:
 | The encoded dataset at `paths.dataset` | made by `ragmani.data.encode`, about 2.5 h for PushCube on one GPU |
 | `WANDB_API_KEY` in the environment, or `wandb login` | training and simulate log to W&B; `wandb.mode=disabled` turns it off |
 
-On Kubernetes with a network volume such as Nautilus's: keep the venv, uv's cache (`UV_CACHE_DIR`) and the model cache (`paths.cache`) on the pod's local disk. The volume writes at about 0.2 MB/s, so installs and the 2.5 GB I-JEPA download there take hours; code, data and `runs/` are fine on it.
+On Kubernetes with a network volume such as Nautilus's: keep the venv, uv's cache (`UV_CACHE_DIR`) and the model cache (`paths.cache`) on the pod's local disk. Those are many small files, which a network volume handles worse than local disk; code, data and `runs/` are fine on it.
 
 ## Workflow
 
@@ -45,20 +45,30 @@ Any config value can be overridden as `section.key=value`, e.g. `train.epochs=10
 | File | What |
 |---|---|
 | `config.yaml` | the full config the run used |
-| `checkpoint-N/` | every `train.save_epochs` epochs |
+| `checkpoint-N/` | every `train.save_epochs` epochs, the newest `train.save_limit` kept |
 | `best/` | the model at its lowest eval loss |
+| `best_success/` | the model at its highest training-time success rate |
 | `final/` | the model at the end |
-| `simulate/training/` | one full sim episode every `train.simulate_epochs` epochs |
+| `simulate/training/` | every `train.simulate_epochs` epochs, a video of one fixed layout; `train.simulate_episodes` other layouts are scored for `simulate/training_success_rate` |
 
-**Simulate** runs 10 episodes with a checkpoint (`best`, `final`, `checkpoint-N`; the latest by default) and logs the success rate, an episode table and videos to the same W&B run.
+**Simulate** runs 20 layouts with a checkpoint (`best_success`, `best`, `final`, `checkpoint-N`; the latest by default), all at once in ManiSkill's parallel envs, and logs the success rate, an episode table and videos to the same W&B run. `train.simulate_after` runs it from training once training ends.
 
 Two evaluations exist. **Eval** is the Trainer's held-out loss (`eval/loss`): predicted actions against demo actions. **Simulate** measures whether the policy actually pushes the cube to the goal (`simulate/...`). Loss can fall while success stays at zero, so simulate is the number that decides; with `train.split=frame` and the row's own demo retrievable, eval loss has fallen sharply while success went to zero.
 
 ## Config
 
-`config/push_cube.yaml` holds one experiment. Its values reproduce `rag_model.py` at commit 8b9a9e3, and each switch's comment names the alternative (`train.split`, `train.exclude_own_episode`, `train.truth_coin`, `model.draw`, `train.lr_scheduler`). The one difference it cannot reach is embedding normalization: `rag_model.py`'s data was not normalized, so matching it needs `encoder.normalize=false` when encoding.
+`config/push_cube.yaml` holds one experiment. Its values reproduce `rag_model.py` at commit 8b9a9e3, and each switch's comment names the alternative (`train.split`, `train.exclude_own_episode`, `train.truth_sampling`, `train.truth_schedule`, `model.keep_sampling`, `model.query`, `train.lr_scheduler`). The one difference it cannot reach is embedding normalization: `rag_model.py`'s data was not normalized, so matching it needs `encoder.normalize=false` when encoding.
 
-Datasets and checkpoints from `rag_model.py` load directly; `data.load` and `RagAct.load` convert them.
+Datasets and checkpoints from `rag_model.py` load directly; `data.load` and `RagAct.load` convert them. Runs saved before a setting existed simulate with `push_cube.yaml`'s value for it.
+
+## Sweeps
+
+`config/sweeps/` holds W&B grid sweeps that A/B test one change at a time from a base. Each run's `test` value is a single override, applied last, and names the run's folder.
+
+```sh
+uv run wandb sweep ragmani/config/sweeps/query_normalize_lr_clipping_decay_scores_truth.yaml   # prints the sweep id
+uv run wandb agent --forward-signals ragmani/ragmani/<sweep-id>
+```
 
 ## Layout
 

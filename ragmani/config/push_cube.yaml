@@ -17,53 +17,67 @@ encoder:
   name: ijepa                     # key in models/encoders.py ENCODERS; siglip uses google/siglip-base-patch16-224
   model_id: jmtzt/ijepa_vith16_1k
   normalize: true
+  precision: float32              # or bfloat16, about 4x faster; encode and simulate both use it, so changing it means re-encoding
 
 encode:
   batch_size: 32                  # frames per encoder forward pass
   max_episodes: null              # null encodes every episode
 
 retrieval:
-  index: ivf                    # exact (torch matmul) or ivf (FAISS, approximate)
-  nlist: null                     # ivf cells; null uses sqrt(rows)
-  nprobe: 8                       # ivf cells searched per query
+  index: ivf                      # ivf searches with FAISS, approximate; exact compares against every row
+  nlist: null                     # clusters FAISS splits the rows into; null uses the square root of the row count
+  nprobe: 8                       # clusters searched per lookup; more is slower and finds more of the true nearest
 
 model:
   name: rag_act
   state_dim: 9
   action_dim: 4
   chunk: 20
-  image_layers: [512, 256, 128, 128, 128]   # hidden widths; input is the encoder dim, output is compressed
+  image_layers: [512, 256, 128, 128, 128]   # hidden layer sizes taking the image embedding down to feature_size
   state_layers: [32, 32, 32]
-  compressed: 64                  # image and state each compress to this
-  queries: 3                      # orthogonal query channels, one retrieval token each
+  feature_size: 64                # image and state are each reduced to this many features
+  queries: 3                      # searches per step, made to point in different directions; each becomes one input to the ACT head
   channel_hidden: 64
   token_dim: 64
-  neighbours: 6                   # fetched per query
-  keep: 3                         # of those, used per query
-  draw: batch                     # key in models/policies.py DRAWS: batch shares one draw (rag_model.py), row draws per row and query
+  neighbours: 6                   # rows each search returns
+  keep: 3                         # of those, how many are kept at random
+  keep_sampling: per_batch        # per_batch keeps the same positions for every row (rag_model.py); per_row picks separately for each row and search
   d_model: 256
   heads: 8
   encoder_layers: 4
   decoder_layers: 4
   feedforward: 1024
   dropout: 0.1
+  query: learned                  # learned searches with a vector query_fetch makes from the model's features (rag_model.py); observation with the frame's own image embedding
+  search_scores_in_attention: false   # true adds each row's search similarity to its attention weight; with query: learned this is the only way query_fetch trains
+  normalize: false                # true rescales state and action to mean 0 and std 1 using the training rows, as ACT does
 
 # Values reproduce rag_model.py at 8b9a9e3; the comments name the alternative each switch offers.
 train:
   epochs: 1500
   batch_size: 512
-  lr: 1.0e-5                      # rag_model.py pins the LR to 1e-5 every step, so its plateau schedule never acts
+  lr: 1.0e-5                      # rag_model.py forces 1e-5 every step, so its plateau schedule never takes effect
   lr_scheduler: constant          # any transformers lr_scheduler_type; reduce_lr_on_plateau uses plateau below
+  max_grad_norm: 1.0              # gradients larger than this are scaled down (Trainer default, rag_model.py); 0 turns it off, as ACT
+  weight_decay: 0.0               # Trainer default, rag_model.py; ACT uses 1.0e-4
   plateau: {factor: 0.1, patience: 5, threshold: 1.0e-3, min_lr: 1.0e-5}
   eval_steps: 1000
-  save_epochs: 20                # a checkpoint every this many epochs (rag_model.py saved every 10000 steps); simulate scores any of them
+  save_epochs: 200                # a checkpoint every this many epochs, for resuming and simulating mid-run; best/ and final/ are always saved
+  save_limit: 3                   # checkpoints kept; older ones are deleted (rag_model.py kept 2)
   log_steps: 100
-  split: frame                    # key in data/splits.py SPLITS: frame holds out random rows, episode whole demos
+  resume: false                   # true continues from the latest checkpoint-* in the run folder and the same W&B run (a restarted pod, or a longer epochs); none found starts fresh
+  split: frame                    # eval rows: frame holds out random rows (rag_model.py), episode holds out whole demos
   eval_fraction: 0.2
   split_seed: 42
-  exclude_own_episode: false      # true makes retrieval skip the row's own demo
-  truth_coin: batch               # key in train/rag_act.py COINS: batch flips one add_gt coin per step, row one per row
-  pad_weight: 1.0                 # is_pad BCE relative to the action L1
+  exclude_own_episode: false      # true stops the search returning rows from the row's own demo
+  truth_sampling: per_batch       # per_batch gives every row in a step the truth row or none (rag_model.py); per_row decides each row separately
+  truth_schedule:                 # the truth row is the row's own true transition, added beside the retrieved ones; its chance falls from 1 to 0
+    mode: whole_run               # whole_run reaches 0 at the end of the run (rag_model.py); fixed_epochs at epochs below, so a short run matches a long run's start; stepped as fixed_epochs in steps
+    epochs: 100                   # used by fixed_epochs and stepped
+    step_epochs: 25               # used by stepped: the chance drops once every this many epochs (1, 0.75, 0.5, 0.25, then 0 over 100)
+  pad_weight: 1.0                 # weight of the loss for predicting where the demo ended, relative to the action loss
   dataloader_workers: 4
   seed: 42                        # the transformers default rag_model.py ran with
-  simulate_epochs: 5              # one full sim episode, logged as video, every this many epochs; 0 turns it off
+  simulate_epochs: 5              # every this many epochs, a sim check during training; 0 turns it off
+  simulate_episodes: 10           # layouts scored at each check for training_success_rate, which picks best_success; the video is one more, fixed layout
+  simulate_after: {checkpoints: [best_success, best, final], episodes: 0}   # after training, simulate these on this many fresh layouts; 0 skips it

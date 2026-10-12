@@ -11,10 +11,29 @@ CONFIG_DIR = Path(__file__).resolve().parent
 ROOT = CONFIG_DIR.parent.parent  # act/: relative paths resolve here, whichever directory a script launches from
 
 
-def load(name, overrides=()):
-  """Read config/<name>.yaml (or a path to a yaml), apply "section.key=value" overrides and resolve paths."""
+RENAMED = {  # keys older runs saved under another name, with their values' new spellings
+  ("model", "compressed"): (("model", "feature_size"), {}),
+  ("model", "draw"): (("model", "keep_sampling"), {"batch": "per_batch", "row": "per_row"}),
+  ("model", "score_bias"): (("model", "search_scores_in_attention"), {}),
+  ("train", "truth_coin"): (("train", "truth_sampling"), {"batch": "per_batch", "row": "per_row"}),
+}
+
+
+def merge(base, over):
+  """base with over's values laid on top, section by section."""
+  return {**base, **{key: merge(base[key], value) if isinstance(value, dict) and isinstance(base.get(key), dict) else value for key, value in over.items()}}
+
+
+def load(name, overrides=(), defaults=None):
+  """Read config/<name>.yaml (or a path to a yaml), apply "section.key=value" overrides and resolve paths.
+
+  defaults names a config whose values fill keys the yaml lacks, such as a run saved before those keys existed.
+  """
   path = Path(name) if str(name).endswith((".yaml", ".yml")) else CONFIG_DIR / f"{name}.yaml"
   config = yaml.safe_load(path.read_text())
+  for (section, key), ((new_section, new_key), values) in RENAMED.items():
+    if key in config.get(section, {}): value = config[section].pop(key); config[new_section][new_key] = values.get(value, value)
+  if defaults: config = merge(yaml.safe_load((CONFIG_DIR / f"{defaults}.yaml").read_text()), config)
 
   for override in overrides:
     key, separator, value = override.partition("=")
