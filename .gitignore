@@ -138,3 +138,14 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+# uv
+.venv/
+# notes and files for one machine only, e.g. .agents/.local/
+.local/
+# training output, checkpoints, eval videos and wandb's local files
+runs/
+wandb/
+# ragmani's data package is code; the "data" rule above is for ACT's recorded episodes
+!ragmani/data/
+# this repo's W&B key (ragmani entity), loaded with `uv run --env-file .env`
+.env
