@@ -35,6 +35,9 @@ dependencies = [
   "wandb",
 ]
 
+[dependency-groups]
+launch = ["kubernetes-asyncio"] # the W&B Launch agent for Nautilus; not wandb[launch], which downgrades protobuf
+
 [tool.uv]
 package = false
 

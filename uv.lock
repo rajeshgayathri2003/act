@@ -75,6 +75,11 @@ dependencies = [
     { name = "wandb" },
 ]
 
+[package.dev-dependencies]
+launch = [
+    { name = "kubernetes-asyncio" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=0.26.0" },
@@ -109,6 +114,9 @@ requires-dist = [
     { name = "transformers" },
     { name = "wandb" },
 ]
+
+[package.metadata.requires-dev]
+launch = [{ name = "kubernetes-asyncio" }]
 
 [[package]]
 name = "aiohappyeyeballs"
@@ -1152,6 +1160,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/ce/a7dc71353dd06a4cbe02222773f52d4a28c81e5a452a75797f8ed113dc99/kiwisolver-1.5.1-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:5daa1f19e097050b9c4d9a78fcc9263cb96c9dfae08037ddc1b7c4ad1889f2a2", size = 79891, upload-time = "2026-08-28T10:28:22.936Z" },
     { url = "https://files.pythonhosted.org/packages/10/b1/d61c61a84ff85d1a36a99df2c152b59ffedb1d356c598902aba44abcdb60/kiwisolver-1.5.1-pp311-pypy311_pp73-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:cdaeeb6c350106df6bf9d873395973e5f066a9713200b72cd64f55d0a3eafab6", size = 77605, upload-time = "2026-08-28T10:28:24.322Z" },
     { url = "https://files.pythonhosted.org/packages/d3/52/5aef56f21a460a6e43ab3cdfc7697d59d7b87deb0ec97a0f7b91aa4a521b/kiwisolver-1.5.1-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:17851e5dad4484be0cbccbde3b15331deae036de9aebd45eed964487802b172f", size = 98465, upload-time = "2026-08-28T10:28:25.696Z" },
+]
+
+[[package]]
+name = "kubernetes-asyncio"
+version = "36.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "certifi" },
+    { name = "python-dateutil" },
+    { name = "pyyaml" },
+    { name = "six" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/45/9e15f4268454636aee32d92ddeaa7128c71100308644bc79685292c1efcc/kubernetes_asyncio-36.1.0.tar.gz", hash = "sha256:6d979d82e5ebe490bea298e7843732a2336173236bae28e200434889443d4443", size = 1426205, upload-time = "2026-06-04T19:42:45.669Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/dc/695601e3a6f08ca3d6035d300a944974c17084050591faec6e1de39e4a4e/kubernetes_asyncio-36.1.0-py3-none-any.whl", hash = "sha256:6d25915d1abff24fceda551a502208d986f674d72586297aa58bc7d55e7feaf3", size = 3044531, upload-time = "2026-06-04T19:42:43.84Z" },
 ]
 
 [[package]]

@@ -2,8 +2,6 @@
 
 Models only compute: losses, schedules, encoders and retrieval live in train/ and data/ and are passed in.
 """
-import json
-import re
 from pathlib import Path
 
 import torch
@@ -14,24 +12,27 @@ from torch import nn
 from detr.models.transformer import RAGActionTransformer, Transformer
 
 
-KEEP_SAMPLING = {  # shape of the random numbers that choose which neighbours to keep
-  "per_row": lambda shape: shape,          # separately for every row and search
-  "per_batch": lambda shape: shape[-1:],   # the same positions for the whole batch, as rag_model.py's randperm
-}
+class CopyGrad(torch.autograd.Function):
+  """Copies gradient from keys to query on backward."""
 
-RAG_MODEL_RENAMES = [  # rag_model.py ActionModel weight names to RagAct's
-  (r"^image_preprocessor_query\.encoder\.", "image_encoder."),
-  (r"^state_preprocessor_query\.encoder\.", "state_encoder."),
-  (r"^sas_value\.", "transition_value."),
-  (r"^channels\.(\d+)\.linear_(\d)\.", lambda match: f"channels.{match[1]}.{int(match[2]) - 1}."),
-  (r"^act_head\.", "head."),
-]
-RAG_MODEL_UNUSED = ("image_preprocessor_value.", "state_preprocessor_value.", "action_preprocessor.", "key_proj.")
+  @staticmethod
+  def forward(ctx, query, embeddings):  # query (B, queries, D), embeddings (B, queries * keep, D)
+    ctx.queries = query.shape[1]
+    return embeddings.view_as(embeddings)
+
+  @staticmethod
+  def backward(ctx, grad_embeddings):
+    batch, rows, dimension = grad_embeddings.shape
+    return grad_embeddings.reshape(batch, ctx.queries, rows // ctx.queries, dimension).sum(dim=2), None
 
 
-def standardize(scale, value):
-  """value scaled by a (2, dim) scale of mean and std."""
-  return (value - scale[0]) / scale[1]
+class StatDict(nn.Module):
+  """Mean and std of one quantity, saved with the checkpoint and never trained; 0 and 1 leave it unchanged until training sets them."""
+
+  def __init__(self, dimension):
+    super().__init__()
+    self.register_buffer("mean", torch.zeros(dimension))
+    self.register_buffer("std", torch.ones(dimension))
 
 
 def mlp(sizes):
@@ -41,7 +42,7 @@ def mlp(sizes):
 
 
 class RagAct(nn.Module):
-  """Retrieval-augmented ACT: three orthogonal queries fetch demo rows, attention turns them into tokens, an ACT head decodes the chunk.
+  """Retrieval-augmented ACT: orthogonal queries fetch demo rows, attention turns them into tokens, an ACT head decodes the chunk.
 
   Gayathri Rajesh's ActionModel (rag_model.py) restructured: the same layers and sizes, minus four it built and never used.
   """
@@ -50,43 +51,50 @@ class RagAct(nn.Module):
     super().__init__()
     self.config = config
     features = config.feature_size  # image and state are each reduced to this many; a key joins the two
+
     self.image_encoder = mlp([image_dim, *config.image_layers, features])
     self.state_encoder = mlp([config.state_dim, *config.state_layers, features])
-    self.transition_value = nn.Linear(2 * config.state_dim + config.action_dim, config.token_dim)  # (state, first action, next_state) of a row
-    self.channels = nn.ModuleList(nn.Sequential(nn.Linear(2 * features, config.channel_hidden), nn.Linear(config.channel_hidden, config.channel_hidden), nn.Linear(config.channel_hidden, config.channel_hidden)) for _ in range(config.queries))  # no activations, as in the original
-    self.query_fetch = nn.Linear(2 * features, image_dim) if config.query == "learned" else nn.Identity()  # into the image embedding's space; the search passes no gradient, so it trains only through search_scores_in_attention
-    self.query_proj = nn.Linear(config.channel_hidden, 2 * features)
-    self.action_proj = nn.Linear(config.token_dim + 2 * features + config.channel_hidden, config.token_dim)  # what attention read from the retrieved rows, plus the search's own features, mixed into one token for the ACT head
-    transformer = Transformer(
-      d_model=config.d_model, nhead=config.heads, num_encoder_layers=config.encoder_layers, num_decoder_layers=config.decoder_layers,
-      dim_feedforward=config.feedforward, dropout=config.dropout, normalize_before=False, return_intermediate_dec=False,
+    self.transition_value = nn.Linear(2 * config.state_dim + config.action_dim, config.token_dim)  # a row's state, first action, next state
+
+    self.channels = nn.ModuleList(
+      nn.Sequential(  # no activations, as in the original
+        nn.Linear(2 * features, config.channel_hidden),
+        nn.Linear(config.channel_hidden, config.channel_hidden),
+        nn.Linear(config.channel_hidden, config.channel_hidden),
+      )
+      for _ in range(config.queries)
     )
-    self.head = RAGActionTransformer(transformer, rag_dim=config.token_dim, state_dim=config.state_dim, n_rag_tokens=config.queries, action_dim=config.action_dim, num_queries=config.chunk)
-    self.register_buffer("state_scale", torch.stack([torch.zeros(config.state_dim), torch.ones(config.state_dim)]))  # mean and std; identity unless training sets them
-    self.register_buffer("action_scale", torch.stack([torch.zeros(config.action_dim), torch.ones(config.action_dim)]))
+    self.query_fetch = nn.Linear(2 * features, image_dim)  # q into the image embedding's space, to search with
+    self.query_proj = nn.Linear(config.channel_hidden, 2 * features)
+    self.action_proj = nn.Linear(config.token_dim + 2 * features + config.channel_hidden, config.token_dim)  # attn_out ⊕ q_stack → one latent token
+
+    transformer = Transformer(
+      d_model=config.d_model,
+      nhead=config.heads,
+      num_encoder_layers=config.encoder_layers,
+      num_decoder_layers=config.decoder_layers,
+      dim_feedforward=config.feedforward,
+      dropout=config.dropout,
+      normalize_before=False,
+      return_intermediate_dec=False,
+    )
+    self.head = RAGActionTransformer(
+      transformer,
+      rag_dim=config.token_dim,
+      state_dim=config.state_dim,
+      n_rag_tokens=config.queries,
+      action_dim=config.action_dim,
+      num_queries=config.chunk,
+    )
+
+    self.state = StatDict(config.state_dim)
+    self.action = StatDict(config.action_dim)
 
   @classmethod
   def load(cls, checkpoint_dir, config, image_dim):
-    """A checkpoint saved by ragmani's trainer, or failing that one saved by rag_model.py."""
+    """A checkpoint saved by ragmani's trainer."""
     model = cls(config, image_dim)
-    try: model.load_state_dict({**dict(model.named_buffers()), **load_file(Path(checkpoint_dir) / "model.safetensors")})  # checkpoints from before the scales load as unscaled
-    except (RuntimeError, FileNotFoundError) as error:
-      try: return cls.from_rag_model(checkpoint_dir, config)
-      except Exception as fallback: raise error from fallback  # not a rag_model.py checkpoint either; the first failure explains it, the second is chained
-    return model
-
-  @classmethod
-  def from_rag_model(cls, checkpoint_dir, config):
-    """Load an ActionModel checkpoint saved by rag_model.py; strict, so a weight left unmapped raises."""
-    directory = Path(checkpoint_dir)
-    weights = load_file(directory / "model.safetensors") if (directory / "model.safetensors").exists() else torch.load(directory / "pytorch_model.bin", map_location="cpu")
-    renamed = {}
-    for name, tensor in weights.items():
-      if name.startswith(RAG_MODEL_UNUSED): continue
-      for pattern, replacement in RAG_MODEL_RENAMES: name = re.sub(pattern, replacement, name)
-      renamed[name] = tensor
-    model = cls(config, image_dim=json.loads((directory / "config.json").read_text())["input_size_im"])
-    model.load_state_dict({**dict(model.named_buffers()), **renamed})
+    model.load_state_dict(load_file(Path(checkpoint_dir) / "model.safetensors"))
     return model
 
   def forward(self, image, state, retriever, exclude=None, truth=None, add_truth=None):
@@ -95,34 +103,62 @@ class RagAct(nn.Module):
     image is (B, image_dim) and state (B, state_dim), both raw. exclude is (B,) episode ids the search skips. truth is each
     row's own raw (action chunk, next_state), added as one more key and value for the rows where add_truth (B,) is True.
     """
-    state = standardize(self.state_scale, state)
-    own_key = torch.cat([self.image_encoder(image), self.state_encoder(state)], dim=-1)  # (B, 2*features)
-    channels = self.orthogonalize(torch.stack([channel(own_key) for channel in self.channels], dim=1))  # (B, queries, channel_hidden)
-    queries = self.query_proj(channels)
+    state = (state - self.state.mean) / self.state.std
 
-    fetch = self.query_fetch(queries if self.config.query == "learned" else image[:, None].expand(-1, self.config.queries, -1))  # observation searches with the frame's own embedding
-    found = retriever.search(fetch, self.config.neighbours, exclude)  # (B, queries, neighbours)
-    kept = torch.rand(KEEP_SAMPLING[self.config.keep_sampling](found.shape), device=found.device).argsort(dim=-1)[..., :self.config.keep].expand(*found.shape[:-1], self.config.keep)
-    indices = found.gather(-1, kept).flatten(1)  # every query's rows together
-    rows = retriever.gather(indices)
-    rows_state, rows_next_state = standardize(self.state_scale, rows["state"]), standardize(self.state_scale, rows["next_state"])
-    keys = torch.cat([self.image_encoder(rows["image_emb"]), self.state_encoder(rows_state)], dim=-1)
-    transitions = torch.cat([rows_state, standardize(self.action_scale, rows["action"][:, :, 0]), rows_next_state], dim=-1)
+    # encode the observation, then make one orthogonal query per channel
+    h_obs = torch.cat([self.image_encoder(image), self.state_encoder(state)], dim=-1)  # (B, 2*features)
+    q_stack = self.orthogonalize(torch.stack([channel(h_obs) for channel in self.channels], dim=1))  # (B, queries, channel_hidden)
+    q = self.query_proj(q_stack)  # (B, queries, 2*features)
 
-    images = rows["image_emb"]
+    mem, idx, q_fetch = self.retrieve(q, retriever, exclude)
+    z = self.generate_latent(image, state, h_obs, q_stack, q, q_fetch, mem, truth, add_truth)
+    action, is_pad = self.head(z, state[:, None])
+    return action, is_pad.squeeze(-1), idx
+
+  def retrieve(self, q, retriever, exclude):
+    """The kept memory rows mem, their row indices idx (B, queries*keep), and the search vectors q_fetch (B, queries, image_dim)."""
+    q_fetch = self.query_fetch(q)
+    topk_idx = retriever.search(q_fetch, self.config.neighbours, exclude)  # (B, queries, neighbours), best first
+
+    if self.training: topk_idx = topk_idx.gather(-1, torch.rand(topk_idx.shape, device=topk_idx.device).argsort(dim=-1))  # shuffled, so training keeps a random few, like dropout
+    idx = topk_idx[..., :self.config.keep].flatten(1)  # every query's rows together
+    return retriever.gather(idx), idx, q_fetch
+
+  def generate_latent(self, image, state, h_obs, q_stack, q, q_fetch, mem, truth, add_truth):
+    """The latent tokens z (B, queries, token_dim): each query attends over the memory rows, and over the truth row where add_truth."""
+    mem_state = (mem["state"] - self.state.mean) / self.state.std
+    mem_image = CopyGrad.apply(q_fetch, mem["image_emb"])
+
+    k = torch.cat([self.image_encoder(mem_image), self.state_encoder(mem_state)], dim=-1)  # (B, rows, 2*features)
+    sas = torch.cat([  # state, action, next state: each row's transition
+      mem_state,
+      (mem["action"][:, :, 0] - self.action.mean) / self.action.std,
+      (mem["next_state"] - self.state.mean) / self.state.std,
+    ], dim=-1)
+    e = mem["image_emb"]  # the embeddings the search scored
+
     if truth is not None:
       action, next_state = truth
-      keys, images = torch.cat([own_key[:, None], keys], dim=1), torch.cat([image[:, None], images], dim=1)
-      transitions = torch.cat([torch.cat([state, standardize(self.action_scale, action[:, 0]), standardize(self.state_scale, next_state)], dim=-1)[:, None], transitions], dim=1)
+      truth_sas = torch.cat([
+        state,
+        (action[:, 0] - self.action.mean) / self.action.std,
+        (next_state - self.state.mean) / self.state.std,
+      ], dim=-1)
 
-    bias = fetch @ images.transpose(1, 2) if self.config.search_scores_in_attention else keys.new_zeros(keys.shape[0], 1, keys.shape[1])  # (B, queries or 1, keys): each row's search similarity, added to its attention weight
-    if truth is not None: bias = bias.masked_fill(F.pad(~add_truth[:, None, None], (0, keys.shape[1] - 1)), float("-inf"))  # the truth key, only where add_truth
+      k = torch.cat([h_obs[:, None], k], dim=1)  # the truth row first
+      e = torch.cat([image[:, None], e], dim=1)
+      sas = torch.cat([truth_sas[:, None], sas], dim=1)
 
-    values = torch.cat([self.transition_value(transitions), keys], dim=-1)
-    attended = F.scaled_dot_product_attention(queries, keys, values, attn_mask=bias)  # each query attends over every retrieved row
-    tokens = self.action_proj(torch.cat([attended, channels], dim=-1))
-    action, is_pad = self.head(tokens, state[:, None])
-    return action, is_pad.squeeze(-1), indices
+    if self.config.search_scores_in_attention: attn_bias = q_fetch @ e.transpose(1, 2)  # (B, queries, rows): each row's search similarity
+    else: attn_bias = k.new_zeros(k.shape[0], 1, k.shape[1])  # (B, 1, rows)
+
+    if truth is not None:
+      hide_truth = F.pad(~add_truth[:, None, None], (0, k.shape[1] - 1))  # True on the truth row where add_truth is False
+      attn_bias = attn_bias.masked_fill(hide_truth, float("-inf"))
+
+    v = torch.cat([self.transition_value(sas), k], dim=-1)  # (B, rows, token_dim + 2*features)
+    attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)  # each query attends over every row
+    return self.action_proj(torch.cat([attn_out, q_stack], dim=-1))
 
   @staticmethod
   def orthogonalize(vectors):

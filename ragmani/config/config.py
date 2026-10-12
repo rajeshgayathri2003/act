@@ -13,9 +13,7 @@ ROOT = CONFIG_DIR.parent.parent  # act/: relative paths resolve here, whichever 
 
 RENAMED = {  # keys older runs saved under another name, with their values' new spellings
   ("model", "compressed"): (("model", "feature_size"), {}),
-  ("model", "draw"): (("model", "keep_sampling"), {"batch": "per_batch", "row": "per_row"}),
   ("model", "score_bias"): (("model", "search_scores_in_attention"), {}),
-  ("train", "truth_coin"): (("train", "truth_sampling"), {"batch": "per_batch", "row": "per_row"}),
 }
 
 
@@ -32,7 +30,9 @@ def load(name, overrides=(), defaults=None):
   path = Path(name) if str(name).endswith((".yaml", ".yml")) else CONFIG_DIR / f"{name}.yaml"
   config = yaml.safe_load(path.read_text())
   for (section, key), ((new_section, new_key), values) in RENAMED.items():
-    if key in config.get(section, {}): value = config[section].pop(key); config[new_section][new_key] = values.get(value, value)
+    if key not in config.get(section, {}): continue
+    value = config[section].pop(key)
+    config[new_section][new_key] = values.get(value, value)
   if defaults: config = merge(yaml.safe_load((CONFIG_DIR / f"{defaults}.yaml").read_text()), config)
 
   for override in overrides:

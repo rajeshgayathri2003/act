@@ -147,3 +147,5 @@ runs/
 wandb/
 # ragmani's data package is code; the "data" rule above is for ACT's recorded episodes
 !ragmani/data/
+# this repo's W&B key (ragmani entity), loaded with `uv run --env-file .env`
+.env

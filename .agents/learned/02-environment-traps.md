@@ -6,6 +6,8 @@ kind: learned
 
 # Environment traps
 
+- **`wandb[launch]` downgrades protobuf to 6.x for the whole lock**; a Kubernetes queue's agent needs only `kubernetes-asyncio`.
+- **cogrob members cannot install the W&B Launch Helm chart** (no Roles or RoleBindings), so the agent runs off-cluster on the local kubeconfig.
 - **`kubectl exec` streams reset on large copies** (369 MB failed at about 2 MB). Copy data as a tar split into 50 MB pieces with `kubectl cp`, check sizes, rejoin on the pod and verify a sha256. Keep the venv, uv cache and HF cache on the pod's local disk: many small files, which a network filesystem handles worse (not measured).
 - **Plain `uv sync` works on Nautilus x86** (drivers 595/615, CUDA 13.2/13.4, cu130 torch): under a minute with a local cache. The image has NVIDIA's Vulkan ICD, so SAPIEN renders on the GPU.
 - **faiss-cpu and torch abort in one process on macOS** (`OMP: Error #15`): both pip wheels bundle LLVM `libomp`. `KMP_DUPLICATE_LIB_OK=TRUE` alone segfaults in the IVF build; with `OMP_NUM_THREADS=1` as well it runs and gives correct results (FAISS flat equals numpy brute force on 500 queries). On Linux (x86 and aarch64) the same pair ran in one process without the error.
