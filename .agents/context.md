@@ -12,6 +12,7 @@ The repo is a fork of tonyzhaozh/act shared by the lab. `ragmani/` restructures 
 - One experiment is one yaml in `ragmani/config/`; any value overrides as `section.key=value`. A class takes its own section, and choices between implementations are name tables (`ENCODERS`, `SPLITS`, `EXECUTIONS`), not `if` chains.
 - Models only compute. Losses, the truth schedule, splits and logging live in `train/`; encoders and retrieval are passed in.
 - Training saves the run's full config to `runs/<name>/config.yaml`; `simulate` rebuilds the model from it, so a run stays reproducible however the yaml changes.
+- Long runs go to Nautilus through `python -m ragmani.launch`. Before one, and after changing training code, run its overrides locally with `train.epochs=1 train.simulate_epochs=1 train.simulate_episodes=2 train.simulate_after.episodes=2 wandb.mode=offline`.
 - "Eval" is the Trainer's held-out loss; "simulate" is the closed-loop success rate in the sim. Judge a change by simulate.
 - `push_cube.yaml` follows `rag_model.py` at 8b9a9e3 except where the README lists a difference; each switch's comment names the alternative. Datasets from `rag_model.py` must keep loading through `data.load`; its checkpoints do not load into `RagAct`.
 - The dataset and live frames go through the same encoder with the same settings, `encoder.precision` included; changing one means re-encoding.

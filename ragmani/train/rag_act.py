@@ -139,7 +139,7 @@ def main(name, overrides):
     learning_rate=config.train.lr,
     lr_scheduler_type=config.train.lr_scheduler,
     lr_scheduler_kwargs=dict(config.train.plateau) if config.train.lr_scheduler == "reduce_lr_on_plateau" else {},
-    warmup_ratio=config.train.warmup_ratio,
+    warmup_steps=config.train.warmup_ratio,  # transformers 5 reads a float below 1 as a share of the steps
     max_grad_norm=config.train.max_grad_norm,
     weight_decay=config.train.weight_decay,
     eval_strategy="steps",
