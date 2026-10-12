@@ -36,7 +36,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-launch = ["kubernetes-asyncio"] # the W&B Launch agent for Nautilus; not wandb[launch], which downgrades protobuf
+launch = ["kubernetes-asyncio", "azure-identity", "azure-storage-blob", "azure-containerregistry", "awscli"] # what the W&B Launch agent's Kubernetes runner imports; not wandb[launch], which downgrades protobuf
 
 [tool.uv]
 package = false

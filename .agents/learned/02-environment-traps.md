@@ -6,7 +6,7 @@ kind: learned
 
 # Environment traps
 
-- **`wandb[launch]` downgrades protobuf to 6.x for the whole lock**; a Kubernetes queue's agent needs only `kubernetes-asyncio`.
+- **`wandb[launch]` downgrades protobuf to 6.x for the whole lock**, through its Google packages. A Kubernetes queue's agent still imports Azure and requires `awscli` for any kubeconfig, so the `launch` group lists those five; check with `import wandb.sdk.launch.runner.kubernetes_runner`.
 - **cogrob members cannot install the W&B Launch Helm chart** (no Roles or RoleBindings), so the agent runs off-cluster on the local kubeconfig.
 - **`kubectl exec` streams reset on large copies** (369 MB failed at about 2 MB). Copy data as a tar split into 50 MB pieces with `kubectl cp`, check sizes, rejoin on the pod and verify a sha256. Keep the venv, uv cache and HF cache on the pod's local disk: many small files, which a network filesystem handles worse (not measured).
 - **Plain `uv sync` works on Nautilus x86** (drivers 595/615, CUDA 13.2/13.4, cu130 torch): under a minute with a local cache. The image has NVIDIA's Vulkan ICD, so SAPIEN renders on the GPU.
