@@ -1,12 +1,17 @@
 """Sends one training run to the W&B Launch queue that runs it as a Job on Nautilus, on code pushed to marco-dev.
 
 Run from act/ as `uv run --env-file .env python -m ragmani.launch <run> [section.key=value ...] [--commit <ref>]`; an agent watching the queue starts it.
+Run from act/ as `uv run --env-file .env python -m ragmani.launch <run> [section.key=value ...] [--commit <ref>]`; an agent watching the queue starts it.
 """
+import argparse
+import subprocess
 import argparse
 import subprocess
 import sys
 
 from wandb.sdk.launch import launch_add
+
+from ragmani.config import load
 
 ENTITY = "ragmani"
 PROJECT = "ragmani"
