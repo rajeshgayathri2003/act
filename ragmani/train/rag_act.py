@@ -26,11 +26,20 @@ from ragmani.models import RagAct
 COLUMNS = ["image_emb", "state", "next_state", "action", "is_pad", "episode"]
 
 
-def retrieval_metrics(idx, inputs, retriever):
-  """How varied and how close the retrieved rows are: share of distinct rows, and mean similarity to the row's own frame."""
+def retrieval_metrics(idx, inputs, retriever, action, exclude):
+  """How useful and how varied the retrieved rows are; each score is 1 for the rows the truth's own embedding finds and 0 for no help."""
+  truth_image, mem_image = inputs["image_emb"].float(), retriever.rows["image_emb"].float()
+  truth_idx = retriever.search(truth_image[:, None], idx.shape[1], exclude).flatten(1)  # the rows a query of the truth's own embedding returns
+  truth_action = (inputs["action"][:, 0] - action.mean) / action.std
+  action_distance = lambda rows: ((retriever.rows["action"][rows][:, :, 0] - action.mean) / action.std - truth_action[:, None]).abs().mean()
+  cos_sim = lambda rows: (mem_image[rows] * truth_image[:, None]).sum(dim=-1).mean()
+  mean_action_distance, avg_cos_sim = truth_action.abs().mean(), (truth_image @ mem_image.mean(dim=0)).mean()  # the mean action is 0 once standardized
+  row_share = idx.flatten().bincount().float()
+  row_share = row_share[row_share > 0] / idx.numel()  # each retrieved row's share of all slots
   return {
-    "retrieval/distinct": len(idx.unique()) / idx.numel(),
-    "retrieval/similarity": (retriever.rows["image_emb"][idx] * inputs["image_emb"][:, None]).sum(dim=-1).mean().item(),
+    "retrieval/action_score": ((mean_action_distance - action_distance(idx)) / (mean_action_distance - action_distance(truth_idx))).item(),  # 0 is no better than the mean action
+    "retrieval/cos_sim_score": ((cos_sim(idx) - avg_cos_sim) / (cos_sim(truth_idx) - avg_cos_sim)).item(),  # 0 is no closer than an average row
+    "retrieval/norm_entropy": (-(row_share * row_share.log()).sum() / math.log(idx.numel())).item(),  # Shannon entropy of which row fills each slot over its maximum: 1 all different, 0 one row
   }
 
 
@@ -56,18 +65,44 @@ class Best(TrainerCallback):
     state.save_to_json(str(self.directory / "trainer_state.json"))
 
 
+class WandbAlerts(TrainerCallback):
+  """Sends a W&B alert, at most hourly per rule, whenever a rule returns a message for the logged metrics; training continues."""
+
+  def __init__(self, rules):
+    self.rules = rules  # {title: rule(logs) -> message or None}
+
+  def on_log(self, args, state, control, logs=None, **kwargs):
+    for title, rule in self.rules.items():
+      if message := rule(logs or {}):
+        wandb.alert(title=title, text=f"{args.run_name}, step {state.global_step}, epoch {state.epoch:.1f}: {message}", level=wandb.AlertLevel.WARN, wait_duration=3600)
+
+  @staticmethod
+  def warn_gradient_exploded(limit, streak=3):
+    """A rule: fires when the gradient norm is not finite, or above limit for streak logs in a row."""
+    high = 0
+
+    def rule(logs):
+      nonlocal high
+      if "grad_norm" not in logs: return None
+      norm = float(logs["grad_norm"])
+      high = high + 1 if not math.isfinite(norm) or norm > limit else 0
+      return f"grad norm {norm:.3g}" if not math.isfinite(norm) or high >= streak else None
+    return rule
+
+
 class RagActTrainer(Trainer):
   """Runs RagAct with the retriever; training gives each row its truth row with probability 1 - progress through the run."""
 
-  def __init__(self, *args, retriever, pad_weight, exclude_own_episode, **kwargs):
+  def __init__(self, *args, retriever, pad_weight, exclude_own_episode, truth_row, **kwargs):
     super().__init__(*args, **kwargs)
     self.retriever = retriever
     self.pad_weight = pad_weight
     self.exclude_own_episode = exclude_own_episode
+    self.truth_row = truth_row
 
   def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
     truth, add_truth = None, None
-    if model.training:
+    if model.training and self.truth_row:
       progress = self.state.global_step / max(self.state.max_steps, 1)  # 0 at the start of the run, 1 at the end
       truth = (inputs["action"], inputs["next_state"])
       add_truth = torch.rand(len(inputs["state"]), device=inputs["state"].device) < 1 - progress  # each row on its own draw
@@ -87,7 +122,7 @@ class RagActTrainer(Trainer):
       self.eval_rows += len(inputs["state"])
       for name, value in losses.items(): self.eval_losses[name] += value.item() * len(inputs["state"])
     elif self.state.global_step % self.args.logging_steps == 0:
-      wandb.log({"train/global_step": self.state.global_step, **{f"train/{name}": value.item() for name, value in losses.items()}, **retrieval_metrics(idx, inputs, self.retriever)})
+      wandb.log({"train/global_step": self.state.global_step, **{f"train/{name}": value.item() for name, value in losses.items()}, **retrieval_metrics(idx, inputs, self.retriever, model.action, exclude), **{name: value.item() for name, value in model.diagnostics.items()}})
 
     loss = losses["action_l1"] + self.pad_weight * losses["pad_bce"]
     return (loss, {"action": pred_action, "is_pad": pred_pad}) if return_outputs else loss
@@ -158,7 +193,9 @@ def main(name, overrides):
   )
 
   callbacks = [Best(config.paths.run_dir)]
-  if config.train.simulate_epochs: callbacks.append(simulate.Callback(config, retriever, config.train.simulate_epochs, config.train.simulate_episodes))
+  alerts = {"Gradient norm exploded": WandbAlerts.warn_gradient_exploded(config.train.alert_grad_norm)} if config.train.alert_grad_norm else {}
+  if alerts: callbacks.append(WandbAlerts(alerts))
+  if config.train.simulate_epochs: callbacks.append(simulate.Callback(config, retriever, eval_rows, config.train.simulate_epochs, config.train.simulate_episodes))
   trainer = RagActTrainer(
     model=model,
     args=arguments,
@@ -169,6 +206,7 @@ def main(name, overrides):
     retriever=retriever,
     pad_weight=config.train.pad_weight,
     exclude_own_episode=config.train.exclude_own_episode,
+    truth_row=config.train.truth_row,
   )
 
   # the run folder; simulate rebuilds the model from its config.yaml, whatever the yaml says later

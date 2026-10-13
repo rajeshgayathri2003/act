@@ -81,10 +81,17 @@ def episodes(model, retriever, encoder, env, seeds, max_steps=MAX_STEPS, executi
 
 
 class Callback(TrainerCallback):
-  """For the Trainer: every few epochs, a video of one fixed layout and the success rate over other fixed layouts, kept as best_success when highest."""
+  """For the Trainer: every few epochs, a video of one fixed layout and the success rate over other fixed layouts, kept as best_success when highest.
 
-  def __init__(self, config, retriever, every, episodes):
+  Each check also logs retrieval/neighbours: for one fixed held-out frame, the rows a query of its own embedding finds and the rows each search kept.
+  """
+
+  def __init__(self, config, retriever, eval_rows, every, episodes):
     self.config, self.retriever, self.every = config, retriever, every
+    episode = eval_rows["episode"][:].numpy()
+    truth_row = int(np.flatnonzero(episode == episode.min())[(episode == episode.min()).sum() // 2])  # the middle step of the first held-out episode
+    truth = eval_rows.with_format("torch", columns=["image_emb", "state", "episode", "step"])[truth_row:truth_row + 1]
+    self.truth = {key: value.to(retriever.rows["image_emb"].device) for key, value in truth.items()}
     score = config.paths.run_dir / "best_success" / "success_rate.json"
     self.highest = json.loads(score.read_text())["success_rate"] if config.train.resume and score.exists() else -1.0  # a resumed run keeps the rate best_success/ was saved at
     self.encoder = ENCODERS[config.encoder.name](config.encoder, retriever.rows["image_emb"].device, config.paths.cache)  # the encoder the dataset was built with
@@ -98,6 +105,7 @@ class Callback(TrainerCallback):
     model.eval()
     (recorded, success, _), *others = episodes(model, self.retriever, self.encoder, self.env, self.seeds, keep={0})
     scored = [succeeded for _, succeeded, _ in others]
+    neighbours = self.neighbours(model)
     model.train()
     if scored and np.mean(scored) >= self.highest:  # a tie keeps the later, longer-trained model
       self.highest = float(np.mean(scored))
@@ -112,7 +120,23 @@ class Callback(TrainerCallback):
       "simulate/training_success": float(success), "simulate/training_steps": len(recorded),
       **({"simulate/training_success_rate": float(np.mean(scored))} if scored else {}),
       "simulate/training_episode": wandb.Video(str(path), caption=f"epoch {round(state.epoch)}: {path.stem}"),
+      "retrieval/neighbours": wandb.Image(neighbours, caption=f"epoch {round(state.epoch)}: truth, then each search's kept rows"),
     })
+
+  @torch.no_grad()
+  def neighbours(self, model):
+    """One image: columns of the truth, the rows a query of its own embedding finds and the rows each search kept; row k holds each column's k-th nearest."""
+    keep, rows = self.config.model.keep, self.retriever.rows
+    _, _, idx = model(self.truth["image_emb"], self.truth["state"], self.retriever)  # (1, queries*keep), nearest first in eval mode
+    truth_idx = self.retriever.search(self.truth["image_emb"][:, None].float(), keep, self.truth["episode"]).flatten()  # the reference the retrieval scores call 1
+    columns = [("query", truth_idx)] + [(f"search {search + 1}", idx[0, search * keep:(search + 1) * keep]) for search in range(self.config.model.queries)]
+
+    locations = [(int(self.truth["episode"]), int(self.truth["step"]))] + [(int(rows["episode"][row]), int(rows["step"][row])) for _, column in columns for row in column.tolist()]
+    images = frames.demo(self.env, self.config.paths.traj, locations)
+    tiles = [frames.caption(image, f"ep {episode} s {step}") for image, (episode, step) in zip(images, locations)]
+    grid = [[tiles[0]] * keep] + [tiles[1 + number * keep:1 + (number + 1) * keep] for number in range(len(columns))]  # one list of keep tiles per column
+    headings = np.concatenate([frames.heading(label) for label in ["truth", *(label for label, _ in columns)]], axis=1)
+    return np.concatenate([headings, *(np.concatenate([column[rank] for column in grid], axis=1) for rank in range(keep))])
 
 
 def main(arguments):

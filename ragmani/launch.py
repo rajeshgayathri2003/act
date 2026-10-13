@@ -40,7 +40,7 @@ def register(reference):
 def main(arguments):
   load("push_cube", arguments.overrides)  # a malformed or unknown override fails here, not minutes into the pod's setup
   job = register(arguments.commit)
-  launch_add(job=job, queue_name=QUEUE, entity=ENTITY, project=PROJECT, name=arguments.run, config={"overrides": {"args": arguments.overrides}})
+  launch_add(job=job, queue_name=QUEUE, entity=ENTITY, project=PROJECT, name=arguments.run, run_id=arguments.run_id, config={"overrides": {"args": arguments.overrides}})
   print(f"queued {arguments.run} on {QUEUE}: {job} with {len(arguments.overrides)} overrides")
 
 
@@ -49,4 +49,5 @@ if __name__ == "__main__":
   parser.add_argument("run", help="the run's name: its W&B run and folder under /marco-west/runs")
   parser.add_argument("overrides", nargs="*", help="section.key=value on top of push_cube.yaml")
   parser.add_argument("--commit", default="HEAD", help="the commit or branch to run; it must be pushed to main")
+  parser.add_argument("--run-id", help="an existing W&B run to continue; its folder on the volume must hold the matching wandb_id")
   main(parser.parse_args())

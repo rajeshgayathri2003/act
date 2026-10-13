@@ -5,7 +5,7 @@ Choosing which neighbours to use (subsampling, how many) belongs to the caller, 
 """
 import torch
 
-COLUMNS = ["image_emb", "state", "action", "next_state", "episode"]
+COLUMNS = ["image_emb", "state", "action", "next_state", "episode", "step"]  # episode and step locate a row's demo state, to render it
 
 
 class Retriever:

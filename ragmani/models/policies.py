@@ -2,6 +2,7 @@
 
 Models only compute: losses, schedules, encoders and retrieval live in train/ and data/ and are passed in.
 """
+import math
 from pathlib import Path
 
 import torch
@@ -16,14 +17,16 @@ class CopyGrad(torch.autograd.Function):
   """Copies gradient from keys to query on backward."""
 
   @staticmethod
-  def forward(ctx, query, embeddings):  # query (B, queries, D), embeddings (B, queries * keep, D)
-    ctx.queries = query.shape[1]
-    return embeddings.view_as(embeddings)
+  def forward(ctx, query, embeddings):  # query (B, queries, D), embeddings (B, queries * keys, D): the keys' image embeddings
+    ctx.save_for_backward(query)
+    return embeddings.view_as(embeddings)  # default
 
   @staticmethod
-  def backward(ctx, grad_embeddings):
+  def backward(ctx, grad_embeddings):  # grad_embeddings (B, queries * keys, D)
+    query = ctx.saved_tensors[0]  # (B, queries, D)
     batch, rows, dimension = grad_embeddings.shape
-    return grad_embeddings.reshape(batch, ctx.queries, rows // ctx.queries, dimension).sum(dim=2), None
+    # (B, queries, keys, D) -> mean over keys -> (B, queries, D) + query
+    return grad_embeddings.view(batch, query.shape[1], rows // query.shape[1], dimension).mean(dim=2) + query, None
 
 
 class StatDict(nn.Module):
@@ -111,6 +114,7 @@ class RagAct(nn.Module):
     q = self.query_proj(q_stack)  # (B, queries, 2*features)
 
     mem, idx, q_fetch = self.retrieve(q, retriever, exclude)
+    self.diagnostics = {"model/h_obs_magnitude": h_obs.detach().norm(dim=-1).mean(), "model/q_fetch_magnitude": q_fetch.detach().norm(dim=-1).mean()}  # read by training's logging
     z = self.generate_latent(image, state, h_obs, q_stack, q, q_fetch, mem, truth, add_truth)
     action, is_pad = self.head(z, state[:, None])
     return action, is_pad.squeeze(-1), idx
@@ -155,6 +159,9 @@ class RagAct(nn.Module):
     if truth is not None:
       hide_truth = F.pad(~add_truth[:, None, None], (0, k.shape[1] - 1))  # True on the truth row where add_truth is False
       attn_bias = attn_bias.masked_fill(hide_truth, float("-inf"))
+      with torch.no_grad():
+        attn_weight = torch.softmax(q @ k.transpose(1, 2) / math.sqrt(q.shape[-1]) + attn_bias, dim=-1)  # the weights scaled_dot_product_attention uses but does not return
+        self.diagnostics["retrieval/attn_weight_on_truth"] = attn_weight[add_truth][..., 0].mean()  # nan without truth rows
 
     v = torch.cat([self.transition_value(sas), k], dim=-1)  # (B, rows, token_dim + 2*features)
     attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)  # each query attends over every row
