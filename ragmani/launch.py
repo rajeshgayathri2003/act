@@ -1,4 +1,4 @@
-"""Sends one training run to the W&B Launch queue that runs it as a Job on Nautilus, on code pushed to main.
+"""Sends one training run to the W&B Launch queue that runs it as a Job on Nautilus, on code pushed to GitHub.
 
 Run from act/ as `uv run --env-file .env python -m ragmani.launch <run> [section.key=value ...] [--commit <ref>]`; an agent watching the queue starts it.
 """
@@ -15,7 +15,6 @@ PROJECT = "ragmani"
 QUEUE = "ragmani-nautilus"
 JOB = "ragmani-train"
 REPOSITORY = "https://github.com/rajeshgayathri2003/act.git"
-BRANCH = "main"
 IMAGE = "dhbhatt/maniskill-experiments:latest"
 
 
@@ -29,8 +28,8 @@ def git(*arguments, allowed=(0,)):
 def register(reference):
   """The job version for a pushed commit, aliased by its short hash; W&B reuses the version when the commit is already registered."""
   commit = git("rev-parse", "--verify", f"{reference}^{{commit}}").stdout.strip()
-  git("fetch", "--quiet", "origin", BRANCH)
-  if git("merge-base", "--is-ancestor", commit, "FETCH_HEAD", allowed=(0, 1)).returncode: raise SystemExit(f"{commit[:7]} is not on origin/{BRANCH}; push it first, since the Job clones from GitHub")
+  git("fetch", "--quiet", "origin")
+  if not git("branch", "--remotes", "--contains", commit).stdout.strip(): raise SystemExit(f"{commit[:7]} is on no branch of origin; push it first, since the Job clones from GitHub")
 
   alias = commit[:7]
   subprocess.run([sys.executable, "-m", "wandb", "job", "create", "git", REPOSITORY, "-e", ENTITY, "-p", PROJECT, "-n", JOB, "-a", alias, "-g", commit, "-E", "bash ragmani/nautilus.sh", "-B", IMAGE], check=True)
@@ -48,6 +47,6 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
   parser.add_argument("run", help="the run's name: its W&B run and folder under /marco-west/runs")
   parser.add_argument("overrides", nargs="*", help="section.key=value on top of push_cube.yaml")
-  parser.add_argument("--commit", default="HEAD", help="the commit or branch to run; it must be pushed to main")
+  parser.add_argument("--commit", default="HEAD", help="the commit or branch to run; it must be pushed to a branch of origin")
   parser.add_argument("--run-id", help="an existing W&B run to continue; its folder on the volume must hold the matching wandb_id")
-  main(parser.parse_args())
+  main(parser.parse_intermixed_args())  # --commit may come before the overrides
