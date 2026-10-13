@@ -103,7 +103,7 @@ class Callback(TrainerCallback):
   def on_epoch_end(self, args, state, control, model=None, **kwargs):
     if round(state.epoch) % self.every: return
     model.eval()
-    (recorded, success, _), *others = episodes(model, self.retriever, self.encoder, self.env, self.seeds, keep={0})
+    (recorded, success, _), *others = episodes(model, self.retriever, self.encoder, self.env, self.seeds)
     scored = [succeeded for _, succeeded, _ in others]
     neighbours = self.neighbours(model)
     model.train()
@@ -115,11 +115,14 @@ class Callback(TrainerCallback):
       (self.config.paths.run_dir / "best_success" / "success_rate.json").write_text(json.dumps({"success_rate": self.highest, "epoch": state.epoch}))
     path = self.config.paths.run_dir / "simulate" / "training" / f"epoch_{round(state.epoch):04d}_{'success' if success else 'fail'}.mp4"
     video.write(path, recorded)
+    grid_path = path.with_name(f"epoch_{round(state.epoch):04d}_grid.mp4")
+    video.write(grid_path, video.grid([frames for frames, _, _ in others], tile=160, successes=scored))  # every scored layout, bordered green or red
     wandb.log({
       "train/global_step": state.global_step, "train/epoch": state.epoch,
       "simulate/training_success": float(success), "simulate/training_steps": len(recorded),
       **({"simulate/training_success_rate": float(np.mean(scored))} if scored else {}),
       "simulate/training_episode": wandb.Video(str(path), caption=f"epoch {round(state.epoch)}: {path.stem}"),
+      "simulate/training_grid": wandb.Video(str(grid_path), caption=f"epoch {round(state.epoch)}: {sum(scored)}/{len(scored)} succeeded"),
       "retrieval/neighbours": wandb.Image(neighbours, caption=f"epoch {round(state.epoch)}: truth, then each search's kept rows"),
     })
 
@@ -165,7 +168,7 @@ def main(arguments):
     results.append({"episode": index, "seed": seed, "success": success, "steps": len(recorded), "mean_reward": float(np.mean(rewards))})
     print(f"Episode {index}: Total Reward {results[-1]['mean_reward']:.4f} Success {success} Timestep {len(recorded)}")
 
-  video.write(output / "grid.mp4", video.grid(recordings))
+  video.write(output / "grid.mp4", video.grid(recordings, successes=[result["success"] for result in results]))
   successes = sum(result["success"] for result in results)
   success_rate = successes / len(results)
   (output / "summary.json").write_text(json.dumps({"checkpoint": str(checkpoint), "step": trained["train/global_step"], "epoch": trained["train/epoch"], "execution": arguments.execution, "success_rate": success_rate, "episodes": results}, indent=2))
