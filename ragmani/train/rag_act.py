@@ -1,12 +1,12 @@
 """Trains RagAct on encoded demos with the Hugging Face Trainer, as rag_model.py does.
 
 The loss and the truth schedule live in compute_loss, which reads training progress from the Trainer's own state.
-Run from act/ as `python -m ragmani.train.rag_act <config> [section.key=value ...]`.
+Run from act/ as `uv run python -m ragmani.train.rag_act <config> [section.key=value ...]`.
 """
 import math
+import os
 import sys
 from collections import defaultdict
-from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -240,15 +240,10 @@ def main(name, overrides):
     trainer.state.save_to_json(str(run_dir / "final" / "trainer_state.json"))  # step and epoch, as every checkpoint-* has them
 
   if config.train.simulate_after.episodes:
-    for checkpoint in config.train.simulate_after.checkpoints:
-      simulate.main(SimpleNamespace(
-        run_dir=run_dir,
-        checkpoint=checkpoint,
-        config=name,
-        episodes=config.train.simulate_after.episodes,
-        max_steps=simulate.MAX_STEPS,
-        execution="ensemble",
-      ))
+    # simulate in a fresh process: training's GPU physics and CUDA memory are released only when its process ends, about 4 GB
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable, "-m", "ragmani.simulate", str(run_dir), "--config", str(name), "--episodes", str(config.train.simulate_after.episodes), "--checkpoint", *config.train.simulate_after.checkpoints])
 
 
 if __name__ == "__main__":

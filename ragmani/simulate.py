@@ -5,6 +5,8 @@ Run from act/ as `uv run python -m ragmani.simulate runs/<run> [--checkpoint che
 """
 import argparse
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import gymnasium as gym
@@ -192,9 +194,13 @@ def main(arguments):
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
   parser.add_argument("run_dir", help="a training run folder, e.g. runs/push_cube")
-  parser.add_argument("--checkpoint", help="a checkpoint-* folder or final; defaults to the latest checkpoint")
+  parser.add_argument("--checkpoint", nargs="*", default=[None], help="checkpoint-* folders, best, best_success or final, each simulated in turn; defaults to the latest checkpoint")
   parser.add_argument("--config", default="push_cube", help="config for runs with no config.yaml of their own")
   parser.add_argument("--episodes", type=int, default=EPISODES)
   parser.add_argument("--max_steps", type=int, default=MAX_STEPS)
   parser.add_argument("--execution", choices=EXECUTIONS, default="ensemble", help="how a step's action comes from the predicted chunks")
-  main(parser.parse_args())
+  arguments = parser.parse_args()
+  if len(arguments.checkpoint) == 1: main(argparse.Namespace(**{**vars(arguments), "checkpoint": arguments.checkpoint[0]}))
+  else:  # a process per checkpoint: SAPIEN's GPU physics is not reliably rebuilt inside one process
+    flags = ["--config", arguments.config, "--episodes", str(arguments.episodes), "--max_steps", str(arguments.max_steps), "--execution", arguments.execution]
+    for checkpoint in arguments.checkpoint: subprocess.run([sys.executable, "-m", "ragmani.simulate", arguments.run_dir, *flags, "--checkpoint", checkpoint], check=True)
