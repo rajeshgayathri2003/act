@@ -13,7 +13,7 @@ ROOT = CONFIG_DIR.parent.parent  # act/: relative paths resolve here, whichever 
 
 RENAMED = {  # keys older runs saved under another name, with their values' new spellings
   ("model", "compressed"): (("model", "feature_size"), {}),
-  ("model", "score_bias"): (("model", "search_scores_in_attention"), {}),
+  ("model", "search_from_image"): (("model", "add_image_emb_to_search"), {}),
 }
 
 

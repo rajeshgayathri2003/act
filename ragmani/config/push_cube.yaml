@@ -12,6 +12,7 @@ wandb:
   entity: ragmani
   project: ragmani
   mode: online                    # online, offline (upload later with `wandb sync`) or disabled
+  group: null                     # the W&B group the run joins, such as test_runs
 
 encoder:
   name: ijepa                     # key in models/encoders.py ENCODERS; siglip uses google/siglip-base-patch16-224
@@ -47,8 +48,10 @@ model:
   decoder_layers: 4
   feedforward: 1024
   dropout: 0.1
-  search_scores_in_attention: false   # true adds each row's search similarity to its attention weight
   normalize: false                # true rescales state and action to mean 0 and std 1 using the training rows, as ACT does
+  add_image_emb_to_search: false  # true searches with the frame's own image embedding plus a learned correction that starts at 0
+  query_fetch_pull: 0.1           # weight of the pull toward 0 that CopyGrad adds to q_fetch's gradient
+  image_fade: 0.0                 # with add_image_emb_to_search, the share of training over which rows stop adding the image, on a cosine from 1 to 0; 0 keeps it always, otherwise eval and simulate search without it
 
 # Values reproduce rag_model.py at 8b9a9e3; the comments name the alternative each switch offers.
 train:
@@ -72,6 +75,7 @@ train:
   exclude_own_episode: false      # true stops the search returning rows from the row's own demo
   truth_row: true                 # true adds each row's own transition as one more key, with probability 1 - progress
   pad_weight: 1.0                 # weight of the loss for predicting where the demo ended, relative to the action loss
+  retrieval_weight: 0.0           # weight of the loss teaching q_fetch to score candidate rows by how close their action is to the truth's; 0 turns it off
   dataloader_workers: 4
   seed: 42                        # the transformers default rag_model.py ran with
   simulate_epochs: 5              # every this many epochs, a sim check during training; 0 turns it off

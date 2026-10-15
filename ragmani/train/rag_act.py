@@ -24,23 +24,42 @@ from ragmani.data.splits import SPLITS
 from ragmani.models import RagAct
 
 COLUMNS = ["image_emb", "state", "next_state", "action", "is_pad", "episode"]
+ACTION_TEMPERATURE = 0.1  # the retrieval loss's target: candidates whose action is this much further from the truth's get e times less weight
+SCORE_TEMPERATURE = 0.01  # divides the cosine of q_fetch and each candidate; the embeddings are close together, so a small one spreads the scores
 
 
 def retrieval_metrics(idx, inputs, retriever, action, exclude):
-  """How useful and how varied the retrieved rows are; each score is 1 for the rows the truth's own embedding finds and 0 for no help."""
+  """How useful and how varied the retrieved rows are: the two scores are 1 for the rows the current frame's own image embedding finds and 0 for no help, and norm_entropy is how many different rows fill the slots."""
   truth_image, mem_image = inputs["image_emb"].float(), retriever.rows["image_emb"].float()
-  truth_idx = retriever.search(truth_image[:, None], idx.shape[1], exclude).flatten(1)  # the rows a query of the truth's own embedding returns
-  truth_action = (inputs["action"][:, 0] - action.mean) / action.std
-  action_distance = lambda rows: ((retriever.rows["action"][rows][:, :, 0] - action.mean) / action.std - truth_action[:, None]).abs().mean()
+  image_idx = retriever.search(truth_image[:, None], idx.shape[1], exclude).flatten(1)  # the rows a search with the current frame's own image embedding returns: the yardstick the queries' rows are scored against
+  truth_action = action.standardize(inputs["action"][:, 0])
+  action_distance = lambda rows: (action.standardize(retriever.rows["action"][rows][:, :, 0]) - truth_action[:, None]).abs().mean()
   cos_sim = lambda rows: (mem_image[rows] * truth_image[:, None]).sum(dim=-1).mean()
   mean_action_distance, avg_cos_sim = truth_action.abs().mean(), (truth_image @ mem_image.mean(dim=0)).mean()  # the mean action is 0 once standardized
   row_share = idx.flatten().bincount().float()
   row_share = row_share[row_share > 0] / idx.numel()  # each retrieved row's share of all slots
   return {
-    "retrieval/action_score": ((mean_action_distance - action_distance(idx)) / (mean_action_distance - action_distance(truth_idx))).item(),  # 0 is no better than the mean action
-    "retrieval/cos_sim_score": ((cos_sim(idx) - avg_cos_sim) / (cos_sim(truth_idx) - avg_cos_sim)).item(),  # 0 is no closer than an average row
+    "retrieval/action_score": ((mean_action_distance - action_distance(idx)) / (mean_action_distance - action_distance(image_idx))).item(),  # 0 is no better than the mean action
+    "retrieval/cos_sim_score": ((cos_sim(idx) - avg_cos_sim) / (cos_sim(image_idx) - avg_cos_sim)).item(),  # 0 is no closer than an average row
     "retrieval/norm_entropy": (-(row_share * row_share.log()).sum() / math.log(idx.numel())).item(),  # Shannon entropy of which row fills each slot over its maximum: 1 all different, 0 one row
   }
+
+
+def retrieval_loss(q_fetch, idx, inputs, retriever, action, exclude):
+  """Cross-entropy teaching q_fetch to rank candidate rows by how close their first action is to the frame's true one: each query's own kept rows, the rows the frame's own image embedding finds, and random rows."""
+  batch, queries, _ = q_fetch.shape
+  count = idx.shape[1]
+  query_idx = idx.view(batch, queries, -1)  # the rows each query's own search kept
+  image_idx = retriever.search(inputs["image_emb"][:, None].float(), count, exclude).view(batch, 1, count).expand(-1, queries, -1)  # the rows a search with the current frame's own image embedding returns, shared by its queries
+  random_idx = torch.randint(0, len(retriever.rows["image_emb"]), (batch, queries, count), device=idx.device)  # easy negatives
+  candidates = torch.cat([query_idx, image_idx, random_idx], dim=-1)  # (B, queries, candidates): every query ranks all of them against how close each row's action is to the frame's true one
+  q_fetch_direction = F.normalize(q_fetch, dim=-1, eps=0.05)
+  scores = (q_fetch_direction[:, :, None] * retriever.rows["image_emb"][candidates].float()).sum(dim=-1) / SCORE_TEMPERATURE  # cosine, since the embeddings are unit length
+  truth_action = action.standardize(inputs["action"][:, 0])
+  distance = (action.standardize(retriever.rows["action"][candidates][..., 0, :]) - truth_action[:, None, None]).abs().mean(dim=-1)
+  own = retriever.rows["episode"][candidates] == exclude[:, None, None] if exclude is not None else torch.zeros_like(candidates, dtype=torch.bool)  # random rows from the frame's own demo, which the search never returns
+  target = torch.softmax(-distance.masked_fill(own, math.inf) / ACTION_TEMPERATURE, dim=-1)
+  return -(target * torch.log_softmax(scores.masked_fill(own, -math.inf), dim=-1).masked_fill(own, 0)).sum(dim=-1).mean()
 
 
 def collate(rows):
@@ -63,6 +82,18 @@ class Best(TrainerCallback):
     self.directory.mkdir(parents=True, exist_ok=True)
     save_model(model, str(self.directory / "model.safetensors"))
     state.save_to_json(str(self.directory / "trainer_state.json"))
+
+
+class WandbStop(TrainerCallback):
+  """Ends training after the current step when the run is stopped from the W&B UI, so the process exits cleanly and a Job does not restart it."""
+
+  def __init__(self):
+    self.requested = False
+
+  def request(self): self.requested = True
+
+  def on_step_end(self, args, state, control, **kwargs):
+    if self.requested: control.should_training_stop = True
 
 
 class WandbAlerts(TrainerCallback):
@@ -93,30 +124,34 @@ class WandbAlerts(TrainerCallback):
 class RagActTrainer(Trainer):
   """Runs RagAct with the retriever; training gives each row its truth row with probability 1 - progress through the run."""
 
-  def __init__(self, *args, retriever, pad_weight, exclude_own_episode, truth_row, **kwargs):
+  def __init__(self, *args, retriever, pad_weight, exclude_own_episode, truth_row, retrieval_weight, **kwargs):
     super().__init__(*args, **kwargs)
     self.retriever = retriever
     self.pad_weight = pad_weight
     self.exclude_own_episode = exclude_own_episode
     self.truth_row = truth_row
+    self.retrieval_weight = retrieval_weight
 
   def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-    truth, add_truth = None, None
+    truth, add_truth, add_image_emb = None, None, None
+    progress = self.state.global_step / max(self.state.max_steps, 1)  # 0 at the start of the run, 1 at the end
+    if model.training and model.config.add_image_emb_to_search and model.config.image_fade:
+      add_image_emb = torch.rand(len(inputs["state"]), device=inputs["state"].device) < 0.5 * (1 + math.cos(math.pi * min(progress / model.config.image_fade, 1)))  # each row on its own draw: flat at first, steepest midway, none once the fade is over
     if model.training and self.truth_row:
-      progress = self.state.global_step / max(self.state.max_steps, 1)  # 0 at the start of the run, 1 at the end
       truth = (inputs["action"], inputs["next_state"])
       add_truth = torch.rand(len(inputs["state"]), device=inputs["state"].device) < 1 - progress  # each row on its own draw
 
     exclude = inputs["episode"] if self.exclude_own_episode else None
-    pred_action, pred_pad, idx = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=exclude, truth=truth, add_truth=add_truth)
+    pred_action, pred_pad, idx = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=exclude, truth=truth, add_truth=add_truth, add_image_emb=add_image_emb)
 
-    target_action = (inputs["action"] - model.action.mean) / model.action.std
+    target_action = model.action.standardize(inputs["action"])
     real_mask = (~inputs["is_pad"]).unsqueeze(-1).float()  # 1 on chunk steps before the demo's end
     error = F.l1_loss(pred_action, target_action, reduction="none") * real_mask
     losses = {
       "action_l1": error.sum() / (real_mask.sum() * pred_action.shape[-1]).clamp(min=1),  # mean over real steps only
       "pad_bce": F.binary_cross_entropy_with_logits(pred_pad, inputs["is_pad"].float()),
     }
+    if self.retrieval_weight: losses["retrieval"] = retrieval_loss(model.q_fetch, idx, inputs, self.retriever, model.action, exclude)  # logged as train/retrieval and eval/retrieval
 
     if not model.training:
       self.eval_rows += len(inputs["state"])
@@ -124,7 +159,7 @@ class RagActTrainer(Trainer):
     elif self.state.global_step % self.args.logging_steps == 0:
       wandb.log({"train/global_step": self.state.global_step, **{f"train/{name}": value.item() for name, value in losses.items()}, **retrieval_metrics(idx, inputs, self.retriever, model.action, exclude), **{name: value.item() for name, value in model.diagnostics.items()}})
 
-    loss = losses["action_l1"] + self.pad_weight * losses["pad_bce"]
+    loss = losses["action_l1"] + self.pad_weight * losses["pad_bce"] + (self.retrieval_weight * losses.get("retrieval", 0) if model.training else 0)  # eval_loss, which picks best, leaves retrieval out
     return (loss, {"action": pred_action, "is_pad": pred_pad}) if return_outputs else loss
 
   def evaluate(self, *args, **kwargs):
@@ -192,7 +227,8 @@ def main(name, overrides):
     seed=config.train.seed,
   )
 
-  callbacks = [Best(config.paths.run_dir)]
+  stop = WandbStop()
+  callbacks = [Best(config.paths.run_dir), stop]
   alerts = {"Gradient norm exploded": WandbAlerts.warn_gradient_exploded(config.train.alert_grad_norm)} if config.train.alert_grad_norm else {}
   if alerts: callbacks.append(WandbAlerts(alerts))
   if config.train.simulate_epochs: callbacks.append(simulate.Callback(config, retriever, eval_rows, config.train.simulate_epochs, config.train.simulate_episodes))
@@ -207,6 +243,7 @@ def main(name, overrides):
     pad_weight=config.train.pad_weight,
     exclude_own_episode=config.train.exclude_own_episode,
     truth_row=config.train.truth_row,
+    retrieval_weight=config.train.retrieval_weight,
   )
 
   # the run folder; simulate rebuilds the model from its config.yaml, whatever the yaml says later
@@ -224,11 +261,13 @@ def main(name, overrides):
     id=run_id,
     entity=config.wandb.entity,
     project=config.wandb.project,
+    group=config.wandb.group,
     mode=config.wandb.mode,
     dir=run_dir.parent,  # every run under one runs/wandb, so `wandb leet runs/wandb` lists them together
     name=run_dir.name,
     config={**config.to_dict(), "rows": rows},
     resume="allow",
+    settings=wandb.Settings(stop_fn=stop.request),  # the UI's stop ends training instead of interrupting it
   ) as run:
     wandb_id.write_text(run.id)  # simulate reattaches to this run
     run.define_metric("eval/loss", summary="min")  # the summary keeps each run's best, so runs sort and filter by it
@@ -239,7 +278,7 @@ def main(name, overrides):
     trainer.save_model(str(run_dir / "final"))
     trainer.state.save_to_json(str(run_dir / "final" / "trainer_state.json"))  # step and epoch, as every checkpoint-* has them
 
-  if config.train.simulate_after.episodes:
+  if config.train.simulate_after.episodes and not stop.requested:
     # simulate in a fresh process: training's GPU physics and CUDA memory are released only when its process ends, about 4 GB
     sys.stdout.flush()
     sys.stderr.flush()

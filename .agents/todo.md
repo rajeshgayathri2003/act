@@ -10,15 +10,15 @@ kind: todo
 
 | section | line |
 |---|---|
-| Next | 19 |
+| Housekeeping | 19 |
 | Ideas | 23 |
 
 <!-- /map -->
 
 
-## Next
+## Housekeeping
 
-- [ ] Docker image for ragmani (teammate); the README's Requirements table is the spec.
+- [ ] Docker image built off `rajeshgayathri/robot-manipulation:latest` to get FAISS working on multiple architectures.
 
 ## Ideas
 
