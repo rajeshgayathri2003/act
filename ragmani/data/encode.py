@@ -49,10 +49,17 @@ def rows(episode, env, encoder, chunk, batch_size):
 def main(name, overrides):
   config = load(name, overrides)
   device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-  trajectories = Trajectories(config.paths.traj)
+  encoder = ENCODERS[config.encoder.name](config.encoder, device, config.paths.cache)
+  for task in config.tasks:
+    if task.dataset.exists(): print(f"{task.env_id}: {task.dataset} exists, skipped")
+    else: encode(task, config, encoder)
+
+
+def encode(task, config, encoder):
+  """Replays one task's demos and saves its rows to the task's dataset."""
+  trajectories = Trajectories(task.traj)
   # replay sets states and renders without stepping, so the controller is unused; joint control needs no IK model
   env = gym.make(trajectories.env_id, num_envs=1, control_mode="pd_joint_pos", obs_mode="state_dict", render_mode="rgb_array").unwrapped  # gymnasium wrappers do not forward set_state_dict
-  encoder = ENCODERS[config.encoder.name](config.encoder, device, config.paths.cache)
   episodes = itertools.islice(trajectories, config.encode.max_episodes)
 
   columns = defaultdict(list)
@@ -70,8 +77,9 @@ def main(name, overrides):
     "action": Array2D((config.model.chunk, action_dim), "float32"),
     "is_pad": List(Value("bool"), length=config.model.chunk),
   })
-  Dataset.from_dict(columns, features=features).save_to_disk(config.paths.dataset)
-  print(f"{len(columns['step'])} rows from {len(set(columns['episode']))} episodes -> {config.paths.dataset}")
+  env.close()
+  Dataset.from_dict(columns, features=features).save_to_disk(task.dataset)
+  print(f"{len(columns['step'])} rows from {len(set(columns['episode']))} episodes -> {task.dataset}")
 
 
 if __name__ == "__main__":

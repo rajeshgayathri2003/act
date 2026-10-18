@@ -37,16 +37,17 @@ def register(reference):
 
 
 def main(arguments):
-  load("push_cube", arguments.overrides)  # a malformed or unknown override fails here, not minutes into the pod's setup
+  load(arguments.config, arguments.overrides)  # a malformed or unknown override fails here, not minutes into the pod's setup
   job = register(arguments.commit)
-  launch_add(job=job, queue_name=QUEUE, entity=ENTITY, project=PROJECT, name=arguments.run, run_id=arguments.run_id, config={"overrides": {"args": arguments.overrides}})
+  launch_add(job=job, queue_name=QUEUE, entity=ENTITY, project=PROJECT, name=arguments.run, run_id=arguments.run_id, config={"overrides": {"args": [arguments.config, *arguments.overrides]}})
   print(f"queued {arguments.run} on {QUEUE}: {job} with {len(arguments.overrides)} overrides")
 
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
   parser.add_argument("run", help="the run's name: its W&B run and folder under /marco-west/runs")
-  parser.add_argument("overrides", nargs="*", help="section.key=value on top of push_cube.yaml")
+  parser.add_argument("overrides", nargs="*", help="section.key=value on top of the config")
+  parser.add_argument("--config", default="push_cube", help="the config in ragmani/config to train")
   parser.add_argument("--commit", default="HEAD", help="the commit or branch to run; it must be pushed to a branch of origin")
   parser.add_argument("--run-id", help="an existing W&B run to continue; its folder on the volume must hold the matching wandb_id")
   main(parser.parse_intermixed_args())  # --commit may come before the overrides

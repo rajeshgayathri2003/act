@@ -179,7 +179,7 @@ def main(name, overrides):
   config = load(name, overrides)
 
   # train and eval rows
-  dataset = data.load(config.paths.dataset).with_format("torch", columns=COLUMNS)
+  dataset = data.combine(config.tasks).with_format("torch", columns=COLUMNS)
   is_held_out = SPLITS[config.train.split](dataset["episode"][:].numpy(), config.train.eval_fraction, config.train.split_seed)
   train_rows = dataset.select(np.flatnonzero(~is_held_out))
   eval_rows = dataset.select(np.flatnonzero(is_held_out))

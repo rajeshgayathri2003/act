@@ -33,6 +33,9 @@ def load(name, overrides=(), defaults=None):
     if key not in config.get(section, {}): continue
     value = config[section].pop(key)
     config[new_section][new_key] = values.get(value, value)
+  if "env_id" in config:  # a run saved before tasks: one task from its env_id, paths.traj and paths.dataset
+    config["tasks"] = [{"env_id": config.pop("env_id"), "traj": config["paths"].pop("traj"), "dataset": config["paths"].pop("dataset")}]
+  defaults = config.pop("defaults", defaults)  # a yaml names the config it builds on
   if defaults: config = merge(yaml.safe_load((CONFIG_DIR / f"{defaults}.yaml").read_text()), config)
 
   for override in overrides:
@@ -40,11 +43,12 @@ def load(name, overrides=(), defaults=None):
     if not separator: raise ValueError(f"override {override!r} is not key=value")
     *parents, leaf = key.split(".")
     section = config
-    for parent in parents: section = section[parent]
+    for parent in parents: section = section[int(parent)] if isinstance(section, list) else section[parent]  # tasks.0.dataset indexes the list
     if leaf not in section: raise KeyError(f"override {key!r} names nothing in {path.name}")
     section[leaf] = float(value) if isinstance(section[leaf], float) else yaml.safe_load(value)  # PyYAML reads 3e-4 as a string
 
   config["paths"] = {key: (ROOT / value).resolve() for key, value in config.get("paths", {}).items()}  # an absolute value stays as is
+  config["tasks"] = [{**task, "traj": (ROOT / task["traj"]).resolve(), "dataset": (ROOT / task["dataset"]).resolve()} for task in config.get("tasks", [])]
   config.setdefault("name", path.stem)
   return Section.build(config)
 
@@ -58,10 +62,12 @@ class Section(SimpleNamespace):
 
   def to_dict(self):
     """Nested dicts of plain values, paths as strings; named as transformers expects of a model's config, for its W&B logging."""
-    return {key: value.to_dict() if isinstance(value, Section) else str(value) if isinstance(value, Path) else value for key, value in vars(self).items()}
+    plain = lambda value: value.to_dict() if isinstance(value, Section) else [plain(item) for item in value] if isinstance(value, list) else str(value) if isinstance(value, Path) else value
+    return {key: plain(value) for key, value in vars(self).items()}
 
   @classmethod
   def build(cls, value):
     """Turn nested dicts into Sections, leaving every other value as is."""
     if isinstance(value, dict): return cls(**{key: cls.build(item) for key, item in value.items()})
+    if isinstance(value, list): return [cls.build(item) for item in value]
     return value

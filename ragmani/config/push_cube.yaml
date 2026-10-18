@@ -1,10 +1,11 @@
 # PushCube-v1, end-effector delta-position control, I-JEPA image embeddings.
 # Relative paths resolve against the repo root (act/).
-env_id: PushCube-v1
+tasks:                            # each task's ManiSkill env, its demos (the controller and demo rendering) and its encoded dataset; override as tasks.0.dataset=...
+  - env_id: PushCube-v1
+    traj: ../robot-manipulation/PushCube-v1/trajectory.state.pd_ee_delta_pos.cpu.h5
+    dataset: ../data/push_cube_jepa
 
 paths:
-  traj: ../robot-manipulation/PushCube-v1/trajectory.state.pd_ee_delta_pos.cpu.h5
-  dataset: ../data/push_cube_jepa
   cache: .cache/hf
   run_dir: runs/push_cube
 

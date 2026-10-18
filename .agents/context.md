@@ -9,7 +9,9 @@ kind: context
 The repo is a fork of tonyzhaozh/act shared by the lab. `ragmani/` restructures the RAG pipeline that grew around `rag_model.py`; the files at the root (`rag_model.py`, `rag_retrieval/`, `ijepa_encoder.py`, `test.py`, the ALOHA sim) stay as they are, since others work from them.
 
 - Run from `act/`, as modules: `uv run python -m ragmani.<module> ...`. Imports are absolute from the package root.
-- One experiment is one yaml in `ragmani/config/`; any value overrides as `section.key=value`. A class takes its own section, and choices between implementations are name tables (`ENCODERS`, `SPLITS`, `EXECUTIONS`), not `if` chains.
+- One experiment is one yaml in `ragmani/config/`; any value overrides as `section.key=value`, list items by index (`tasks.1.dataset=...`). A yaml may name another under `defaults:` and hold only what differs. A class takes its own section, and choices between implementations are name tables (`ENCODERS`, `SPLITS`, `EXECUTIONS`), not `if` chains.
+- `tasks` lists each task's env, demos and dataset. Training trains one model on every task's rows, with a row's `episode` offset by `data.TASK_STRIDE` per task; simulate shares a fixed episode count across the tasks, steps every task's envs together, and scores the run over all episodes. One-task runs keep the old W&B keys and folders.
+- On Nautilus, `nautilus.sh` links `../data` and `../robot-manipulation` to the volume, so task paths stay relative; `python -m ragmani.launch --config <name>` picks the yaml.
 - Models only compute. Losses, the truth schedule, splits and logging live in `train/`; encoders and retrieval are passed in.
 - Training saves the run's full config to `runs/<name>/config.yaml`; `simulate` rebuilds the model from it, so a run stays reproducible however the yaml changes.
 - Long runs go to Nautilus through `python -m ragmani.launch`. Before one, and after changing training code, run its overrides locally with `train.epochs=1 train.simulate_epochs=1 train.simulate_episodes=2 train.simulate_after.episodes=2 wandb.mode=offline`.

@@ -22,8 +22,8 @@ What a machine or container needs, however it is set up:
 | Linux x86_64 with an NVIDIA GPU of about 16 GB or more, driver 580 or newer | torch comes from the CUDA 13.0 index (`pyproject.toml`); an A10, L4 or RTX 3090 is plenty |
 | NVIDIA's Vulkan driver in the container (`/usr/share/vulkan/icd.d/nvidia_icd.json`) and `NVIDIA_DRIVER_CAPABILITIES` including `graphics` | ManiSkill renders through Vulkan; without it, encode and simulate fail at `gym.make` |
 | About 8 CPUs | dataloader workers, and the sim's physics runs on the CPU |
-| The demos at `paths.traj` | `PushCube-v1/trajectory.state.pd_ee_delta_pos.cpu.h5` and the `.json` beside it |
-| The encoded dataset at `paths.dataset` | made by `ragmani.data.encode`, about 2.5 h for PushCube on one GPU |
+| Each task's demos at its `tasks[].traj` | `PushCube-v1/trajectory.state.pd_ee_delta_pos.cpu.h5` and the `.json` beside it |
+| Each task's encoded dataset at its `tasks[].dataset` | made by `ragmani.data.encode`, about 2.5 h for PushCube on one GPU |
 | `WANDB_API_KEY` in the environment, or `wandb login` | training and simulate log to W&B; `wandb.mode=disabled` turns it off |
 
 On Kubernetes with a network volume such as Nautilus's: keep the venv, uv's cache (`UV_CACHE_DIR`) and the model cache (`paths.cache`) on the pod's local disk. Those are many small files, which a network volume handles worse than local disk; code, data and `runs/` are fine on it.
@@ -38,7 +38,7 @@ uv run python -m ragmani.simulate runs/my_run --checkpoint best     # success ra
 
 Any config value can be overridden as `section.key=value`, e.g. `train.epochs=100 train.lr=1e-4`.
 
-**Encode** replays each demo, renders every step, embeds the frames and writes one row per step to `paths.dataset`.
+**Encode** replays each task's demos, renders every step, embeds the frames and writes one row per step to the task's `dataset`, skipping tasks whose dataset exists.
 
 **Train** writes everything for a run to `runs/<name>/` and logs to W&B:
 
