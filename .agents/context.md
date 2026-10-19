@@ -6,19 +6,18 @@ kind: context
 
 # Context
 
-The repo is a fork of tonyzhaozh/act shared by the lab. `ragmani/` restructures the RAG pipeline that grew around `rag_model.py`; the files at the root (`rag_model.py`, `rag_retrieval/`, `ijepa_encoder.py`, `test.py`, the ALOHA sim) stay as they are, since others work from them.
+A lab-shared fork of tonyzhaozh/act. `ragmani/` restructures the RAG pipeline around `rag_model.py`; the root files (`rag_model.py`, `rag_retrieval/`, `ijepa_encoder.py`, `test.py`, the ALOHA sim) stay as they are.
 
-- Run from `act/`, as modules: `uv run python -m ragmani.<module> ...`. Imports are absolute from the package root.
-- One experiment is one yaml in `ragmani/config/`; any value overrides as `section.key=value`, list items by index (`tasks.1.dataset=...`). A yaml may name another under `defaults:` and hold only what differs. A class takes its own section, and choices between implementations are name tables (`ENCODERS`, `SPLITS`, `EXECUTIONS`), not `if` chains.
-- `tasks` lists each task's env, demos and dataset. Training trains one model on every task's rows, with a row's `episode` offset by `data.TASK_STRIDE` per task; simulate shares a fixed episode count across the tasks, steps every task's envs together, and scores the run over all episodes. One-task runs keep the old W&B keys and folders.
-- On Nautilus, `nautilus.sh` links `../data` and `../robot-manipulation` to the volume, so task paths stay relative; `python -m ragmani.launch --config <name>` picks the yaml.
-- Models only compute. Losses, the truth schedule, splits and logging live in `train/`; encoders and retrieval are passed in.
-- Training saves the run's full config to `runs/<name>/config.yaml`; `simulate` rebuilds the model from it, so a run stays reproducible however the yaml changes.
-- Long runs go to Nautilus through `python -m ragmani.launch`. Before one, and after changing training code, run its overrides locally with `train.epochs=1 train.simulate_epochs=1 train.simulate_episodes=2 train.simulate_after.episodes=2 wandb.mode=offline`.
-- "Eval" is the Trainer's held-out loss; "simulate" is the closed-loop success rate in the sim. Judge a change by simulate.
-- `push_cube.yaml` follows `rag_model.py` at 8b9a9e3 except where the README lists a difference; each switch's comment names the alternative. Datasets from `rag_model.py` must keep loading through `data.load`; its checkpoints do not load into `RagAct`.
-- The dataset and live frames go through the same encoder with the same settings, `encoder.precision` included; changing one means re-encoding.
-- `simulate` loads a run's saved `config.yaml` with `push_cube.yaml` as defaults, and `config.RENAMED` maps keys older runs saved under other names; a renamed key gets an entry there.
-- `simulate.episodes` runs every layout at once in ManiSkill's parallel envs (GPU physics); the run scores use seed 42's layouts, training-time checks `CHECK_SEED`'s, so choosing `best_success` never sees the reported layouts.
-- Python here: two-space indent, no `Author:` line ([[python]] in `standards/`).
-- `.agents/.local/` holds notes for one machine and is gitignored.
+- Run from `act/` as modules: `uv run python -m ragmani.<module>`. Imports are absolute.
+- Settings are typed dataclasses in `ragmani/config.py`, one section per class; experiments are `PRESETS`, overridden by tyro flags after the preset (`push_cube --train.lr 3e-4`, `--tasks.1.dataset ...`). Choices are name tables (`ENCODERS`, `SPLITS`, `EXECUTIONS`) or enums, not `if` chains.
+- Task paths sit under `DATA_DIR` (default `../data`); the model cache is `HF_HOME`. `nautilus.sh` sets both for Jobs; `python -m ragmani.launch <run> --preset <name> [flags]` queues one.
+- `tasks` trains one model on every task's rows, episodes offset by `data.TASK_STRIDE`; simulate shares a fixed episode count across tasks.
+- Models only compute; losses and logging live in `train.py`.
+- A run's config lives in W&B; `simulate` reloads it via the run folder's `wandb_id`. Offline runs cannot be reloaded until synced.
+- Before a long run, or after changing training code, smoke it locally with `--train.epochs 1 --train.simulate_epochs 1 --train.simulate_episodes 2`.
+- Judge a change by simulate, not eval loss.
+- Checkpoints from `rag_model.py` or from before the `simplify` rework do not load into `RagAct`; its datasets still load through `data.load`.
+- Dataset and live frames must use the same encoder settings, `encoder.precision` included; changing one means re-encoding.
+- Simulate's reported scores use seed 42's layouts, training checks `CHECK_SEED`'s, so `best_success` never sees the reported layouts.
+- Python: two-space indent, no `Author:` line ([[python]]).
+- `.agents/.local/` is per-machine and gitignored.

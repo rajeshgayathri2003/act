@@ -1,6 +1,6 @@
 """Runs a trained RagAct in the sim on fresh layouts and records success and video, as Gayathri's test.py does.
 
-Every episode runs at once in ManiSkill's parallel envs, rebuilt from the run's own config.yaml.
+Every episode runs at once in ManiSkill's parallel envs, with the model rebuilt from the config W&B stored for the run.
 Run from act/ as `uv run python -m ragmani.simulate runs/<run> [--checkpoint checkpoint-N] [--episodes N] [--max_steps N]`.
 """
 import argparse
@@ -18,7 +18,7 @@ from safetensors.torch import save_model
 from transformers import TrainerCallback
 
 from ragmani import data
-from ragmani.config import load
+from ragmani.config import cli, load_run
 from ragmani.data.retriever import Retriever
 from ragmani.data.trajectories import Trajectories
 from ragmani.models import ENCODERS, RagAct
@@ -34,10 +34,15 @@ ENSEMBLE_DECAY = 0.01  # ACT's k in exp(-k * i): older chunks count slightly mor
 
 
 def ensemble(chunks, step):
-  """ACT's temporal ensembling for every env at once: each chunk predicted for this step votes, weighted exp(-ENSEMBLE_DECAY * i) from the oldest."""
-  actions = torch.stack([chunk[:, step - start] for start, chunk in chunks if step - start < chunk.shape[1]])  # (votes, envs, action_dim)
-  weights = torch.exp(-ENSEMBLE_DECAY * torch.arange(len(actions), device=actions.device))
-  return (weights[:, None, None] * actions).sum(dim=0) / weights.sum()
+  """ACT's temporal ensembling for every env at once: each chunk predicted for this step votes, weighted exp(-ENSEMBLE_DECAY * i) from the oldest and by how sure the model is the step is a real action.
+
+  Steps past the demo's end get no action target in training, so a step the model marks as padding barely counts.
+  """
+  votes = [(chunk[:, step - start], real[:, step - start]) for start, chunk, real in chunks if step - start < chunk.shape[1]]
+  actions = torch.stack([action for action, _ in votes])  # (votes, envs, action_dim)
+  real = torch.stack([real for _, real in votes])  # (votes, envs)
+  weights = torch.exp(-ENSEMBLE_DECAY * torch.arange(len(votes), device=actions.device))[:, None] * real
+  return (weights[..., None] * actions).sum(dim=0) / weights.sum(dim=0).clamp_min(1e-6)[:, None]
 
 
 EXECUTIONS = {  # which action each env runs at a step, from the (start step, chunks) pairs predicted so far
@@ -65,7 +70,7 @@ def episodes(model, retriever, encoder, envs, seeds, max_steps=MAX_STEPS, execut
   device = next(model.parameters()).device
   observations = [env.reset(seed=env_seeds)[0] for env, env_seeds in zip(envs, seeds)]
   recorded, rewards = [[[] for _ in env_seeds] for env_seeds in seeds], [[[] for _ in env_seeds] for env_seeds in seeds]
-  chunks = [[] for _ in envs]
+  chunks = [[] for _ in envs]  # per env, (start step, actions, real-step probabilities) for each chunk still covering a step
   succeeded, done = [torch.zeros(len(env_seeds), dtype=torch.bool) for env_seeds in seeds], [torch.zeros(len(env_seeds), dtype=torch.bool) for env_seeds in seeds]
   for step in range(max_steps):
     active = [number for number in range(len(envs)) if not done[number].all()]
@@ -73,11 +78,13 @@ def episodes(model, retriever, encoder, envs, seeds, max_steps=MAX_STEPS, execut
     images = [frames.render(envs[number]) for number in active]
     embeddings = encoder.embed(np.concatenate(images)).to(device)
     qpos = torch.cat([observations[number]["agent"]["qpos"].to(device).float() for number in active])
-    chunk, _, _ = model(embeddings, qpos, retriever)
+    chunk, pad_logit, _ = model(embeddings, qpos, retriever)
     chunk = model.action.destandardize(chunk)  # back to the controller's units
+    real = torch.sigmoid(-pad_logit)  # (envs, chunk_len): how sure the model is each step is a real action, not past the demo's end
 
-    for number, image, part in zip(active, images, chunk.split([len(seeds[number]) for number in active])):
-      chunks[number] = [*chunks[number], (step, part)][-part.shape[1]:]  # only chunks that still cover this step
+    sizes = [len(seeds[number]) for number in active]
+    for number, image, part, part_real in zip(active, images, chunk.split(sizes), real.split(sizes)):
+      chunks[number] = [*chunks[number], (step, part, part_real)][-part.shape[1]:]  # only chunks that still cover this step
       action = EXECUTIONS[execution](chunks[number], step)
       observations[number], reward, terminated, _, info = envs[number].step(action.to(envs[number].device))  # the unwrapped env never truncates; max_steps does
       for index in (~done[number]).nonzero().flatten().tolist():
@@ -101,9 +108,9 @@ class Callback(TrainerCallback):
     truth_row = int(np.flatnonzero(episode == episode.min())[(episode == episode.min()).sum() // 2])  # the middle step of the first held-out episode
     truth = eval_rows.with_format("torch", columns=["image_emb", "state", "episode", "step"])[truth_row:truth_row + 1]
     self.truth = {key: value.to(retriever.rows["image_emb"].device) for key, value in truth.items()}
-    score = config.paths.run_dir / "best_success" / "success_rate.json"
+    score = config.run_dir / "best_success" / "success_rate.json"
     self.highest = json.loads(score.read_text())["success_rate"] if config.train.resume and score.exists() else -1.0  # a resumed run keeps the rate best_success/ was saved at
-    self.encoder = ENCODERS[config.encoder.name](config.encoder, retriever.rows["image_emb"].device, config.paths.cache)  # the encoder the dataset was built with
+    self.encoder = ENCODERS[config.encoder.name](config.encoder, retriever.rows["image_emb"].device)  # the encoder the dataset was built with
     video_seed = int(np.random.default_rng(SEED).integers(0, 1_000_000))  # main's episode 0, so the two videos compare
     scored_seeds = np.random.default_rng(CHECK_SEED).integers(0, 1_000_000, episodes).tolist()
     tasks = share(len(scored_seeds), len(config.tasks), CHECK_SEED)
@@ -123,10 +130,10 @@ class Callback(TrainerCallback):
       logs |= self.log(task, round(state.epoch), recorded, success, others, scored)
     if every and np.mean(every) >= self.highest:  # a tie keeps the later, longer-trained model
       self.highest = float(np.mean(every))
-      (self.config.paths.run_dir / "best_success").mkdir(parents=True, exist_ok=True)
-      save_model(model, str(self.config.paths.run_dir / "best_success" / "model.safetensors"))
-      state.save_to_json(str(self.config.paths.run_dir / "best_success" / "trainer_state.json"))
-      (self.config.paths.run_dir / "best_success" / "success_rate.json").write_text(json.dumps({"success_rate": self.highest, "epoch": state.epoch}))
+      (self.config.run_dir / "best_success").mkdir(parents=True, exist_ok=True)
+      save_model(model, str(self.config.run_dir / "best_success" / "model.safetensors"))
+      state.save_to_json(str(self.config.run_dir / "best_success" / "trainer_state.json"))
+      (self.config.run_dir / "best_success" / "success_rate.json").write_text(json.dumps({"success_rate": self.highest, "epoch": state.epoch}))
     wandb.log({
       **logs,
       **({"simulate/training_success_rate": float(np.mean(every))} if every else {}),  # over every scored episode, whichever its task
@@ -136,7 +143,7 @@ class Callback(TrainerCallback):
   def log(self, task, epoch, recorded, success, others, scored):
     """One task's check: its videos on disk and its W&B entries, under simulate/<env_id>/ when the run has several tasks."""
     folder, prefix = (("training", "simulate/") if len(self.config.tasks) == 1 else (f"training/{task.env_id}", f"simulate/{task.env_id}/"))
-    path = self.config.paths.run_dir / "simulate" / folder / f"epoch_{epoch:04d}_{'success' if success else 'fail'}.mp4"
+    path = self.config.run_dir / "simulate" / folder / f"epoch_{epoch:04d}_{'success' if success else 'fail'}.mp4"
     video.write(path, recorded)
     grid_path = path.with_name(f"epoch_{epoch:04d}_grid.mp4")
     video.write(grid_path, video.grid([frames for frames, _, _ in others], tile=160, successes=scored))  # every scored layout, bordered green or red
@@ -150,10 +157,10 @@ class Callback(TrainerCallback):
   @torch.no_grad()
   def neighbours(self, model):
     """One image: columns of the truth, the rows a query of its own embedding finds and the rows each search kept; row k holds each column's k-th nearest."""
-    keep, rows = self.config.model.keep, self.retriever.rows
+    keep, rows = self.config.model.n_keep, self.retriever.rows
     _, _, idx = model(self.truth["image_emb"], self.truth["state"], self.retriever)  # (1, queries*keep), nearest first in eval mode
     truth_idx = self.retriever.search(self.truth["image_emb"][:, None].float(), keep, self.truth["episode"]).flatten()  # the reference the retrieval scores call 1
-    columns = [("query", truth_idx)] + [(f"search {search + 1}", idx[0, search * keep:(search + 1) * keep]) for search in range(self.config.model.queries)]
+    columns = [("query", truth_idx)] + [(f"search {search + 1}", idx[0, search * keep:(search + 1) * keep]) for search in range(self.config.model.n_queries)]
 
     locations = [(int(self.truth["episode"]), int(self.truth["step"]))] + [(int(rows["episode"][row]), int(rows["step"][row])) for _, column in columns for row in column.tolist()]
     images = [None] * len(locations)
@@ -168,7 +175,8 @@ class Callback(TrainerCallback):
 
 def main(arguments):
   run_dir = Path(arguments.run_dir).resolve()
-  config = load(run_dir / "config.yaml", defaults=arguments.config) if (run_dir / "config.yaml").exists() else load(arguments.config, [f"paths.run_dir={run_dir}"])  # older runs lack newer keys
+  id_file = run_dir / "wandb_id"  # written by training, so simulation lands in the run that trained the checkpoint
+  config = load_run(id_file.read_text().strip()) if id_file.exists() else cli([arguments.config, "--run_dir", str(run_dir)])
   device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
   checkpoint = run_dir / arguments.checkpoint if arguments.checkpoint else max(run_dir.glob("checkpoint-*"), key=lambda path: int(path.name.split("-")[1]), default=run_dir / "final")
   output = run_dir / "simulate" / f"{checkpoint.name}-{arguments.execution}"
@@ -177,8 +185,9 @@ def main(arguments):
   print(f"Loading checkpoint: {checkpoint} (step {trained['train/global_step']}, epoch {trained['train/epoch']})")
 
   retriever = Retriever(data.combine(config.tasks), config.retrieval, device)
-  model = RagAct.load(checkpoint, config.model, image_dim=retriever.rows["image_emb"].shape[-1]).to(device).eval()
-  encoder = ENCODERS[config.encoder.name](config.encoder, device, config.paths.cache)
+  config.model.d_image = retriever.rows["image_emb"].shape[-1]
+  model = RagAct.load(checkpoint, config.model).to(device).eval()
+  encoder = ENCODERS[config.encoder.name](config.encoder, device)
   seeds = np.random.default_rng(SEED).integers(0, 1_000_000, arguments.episodes).tolist()
   tasks = share(len(seeds), len(config.tasks), SEED)
   runs = [(task, [seed for seed, assigned in zip(seeds, tasks) if assigned == index]) for index, task in enumerate(config.tasks)]
@@ -211,7 +220,6 @@ def main(arguments):
     }
   print(f"Success rate: {sum(every)}/{len(every)} over {len(runs)} task(s) -> {output}")
 
-  id_file = run_dir / "wandb_id"  # written by training, so simulation lands in the run that trained the checkpoint
   with wandb.init(entity=config.wandb.entity, project=config.wandb.project, group=config.wandb.group, mode=config.wandb.mode, dir=run_dir.parent, name=run_dir.name, id=id_file.read_text().strip() if id_file.exists() else None, resume="allow") as run:
     id_file.write_text(run.id)
     run.define_metric("simulate/success_rate", summary="max")  # the run's best checkpoint score, for sorting runs
@@ -228,7 +236,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
   parser.add_argument("run_dir", help="a training run folder, e.g. runs/push_cube")
   parser.add_argument("--checkpoint", nargs="*", default=[None], help="checkpoint-* folders, best, best_success or final, each simulated in turn; defaults to the latest checkpoint")
-  parser.add_argument("--config", default="push_cube", help="config for runs with no config.yaml of their own")
+  parser.add_argument("--config", default="push_cube", help="the preset for runs with no wandb_id of their own")
   parser.add_argument("--episodes", type=int, default=EPISODES)
   parser.add_argument("--max_steps", type=int, default=MAX_STEPS)
   parser.add_argument("--execution", choices=EXECUTIONS, default="ensemble", help="how a step's action comes from the predicted chunks")

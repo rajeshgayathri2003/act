@@ -1,73 +1,50 @@
 # ragmani
 
-Retrieval-augmented ACT on ManiSkill: encode demos into embeddings, train a policy that retrieves similar demo steps and attends over them, then run it in the sim and record success and video. It restructures the `rag_model.py` pipeline and what was tried around it into one package that is easier to read and for several people to work on. The original files at the repo root are untouched, and ragmani reads their datasets.
+Retrieval-augmented ACT on ManiSkill: encode demos into embeddings, train a policy that retrieves demo steps and attends over them, then score it in the sim. It restructures the `rag_model.py` pipeline; the files at the repo root are untouched, and ragmani reads their datasets.
 
 ## Setup
-
-Needs [uv](https://docs.astral.sh/uv/getting-started/installation/), Astral's Python package manager; `curl -LsSf https://astral.sh/uv/install.sh | sh` installs it.
 
 ```sh
 uv sync
 uv run wandb login
 ```
 
-Run every command from `act/`, the repo root.
+Run every command from `act/`.
 
-## Requirements
-
-What a machine or container needs, however it is set up:
-
-| Need | Why |
+| Needs | Why |
 |---|---|
-| Linux x86_64 with an NVIDIA GPU of about 16 GB or more, driver 580 or newer | torch comes from the CUDA 13.0 index (`pyproject.toml`); an A10, L4 or RTX 3090 is plenty |
-| NVIDIA's Vulkan driver in the container (`/usr/share/vulkan/icd.d/nvidia_icd.json`) and `NVIDIA_DRIVER_CAPABILITIES` including `graphics` | ManiSkill renders through Vulkan; without it, encode and simulate fail at `gym.make` |
-| About 8 CPUs | dataloader workers, and the sim's physics runs on the CPU |
-| Each task's demos at its `tasks[].traj` | `PushCube-v1/trajectory.state.pd_ee_delta_pos.cpu.h5` and the `.json` beside it |
-| Each task's encoded dataset at its `tasks[].dataset` | made by `ragmani.data.encode`, about 2.5 h for PushCube on one GPU |
-| `WANDB_API_KEY` in the environment, or `wandb login` | training and simulate log to W&B; `wandb.mode=disabled` turns it off |
-
-On Kubernetes with a network volume such as Nautilus's: keep the venv, uv's cache (`UV_CACHE_DIR`) and the model cache (`paths.cache`) on the pod's local disk. Those are many small files, which a network volume handles worse than local disk; code, data and `runs/` are fine on it.
+| NVIDIA GPU, about 16 GB, driver 580+ | torch comes from the CUDA 13.0 index |
+| NVIDIA's Vulkan driver, `NVIDIA_DRIVER_CAPABILITIES` including `graphics` | ManiSkill renders through Vulkan |
+| `DATA_DIR` (default `../data`) | each task's demos (`<env>/trajectory...h5` and its `.json`) and encoded dataset |
+| `WANDB_API_KEY` or `wandb login` | logging; simulate also reloads a run's config from W&B |
+| `HF_HOME`, optionally | the image encoder's cache; on Kubernetes keep it, the venv and `UV_CACHE_DIR` on local disk |
 
 ## Workflow
 
 ```sh
-uv run python -m ragmani.data.encode push_cube                      # demos -> encoded dataset, once per dataset
-uv run python -m ragmani.train.rag_act push_cube paths.run_dir=runs/my_run
-uv run python -m ragmani.simulate runs/my_run --checkpoint best     # success rate and video in the sim
+uv run python -m ragmani.data.encode push_cube                   # demos -> encoded dataset
+uv run python -m ragmani.train push_cube --run_dir runs/my_run   # any field as a flag, e.g. --train.lr 3e-4
+uv run python -m ragmani.simulate runs/my_run --checkpoint best  # success rate and video
 ```
 
-Any config value can be overridden as `section.key=value`, e.g. `train.epochs=100 train.lr=1e-4`.
+The first word is a preset from `config.py`'s `PRESETS`; `<preset> --help` lists every field.
 
-**Encode** replays each task's demos, renders every step, embeds the frames and writes one row per step to the task's `dataset`, skipping tasks whose dataset exists.
+A run folder holds `checkpoint-N/`, `best/` (lowest eval loss), `best_success/` (highest training-time success), `final/`, the `simulate/` videos and `wandb_id`. Simulate rebuilds the model from the config W&B stored for the run, so an offline run needs `wandb sync` first.
 
-**Train** writes everything for a run to `runs/<name>/` and logs to W&B:
+Judge a change by simulate, not eval loss: the arm's state alone predicts most of the action L1.
 
-| File | What |
-|---|---|
-| `config.yaml` | the full config the run used |
-| `checkpoint-N/` | every `train.save_epochs` epochs, the newest `train.save_limit` kept |
-| `best/` | the model at its lowest eval loss |
-| `best_success/` | the model at its highest training-time success rate |
-| `final/` | the model at the end |
-| `simulate/training/` | every `train.simulate_epochs` epochs, a video of one fixed layout; `train.simulate_episodes` other layouts are scored for `simulate/training_success_rate` |
+## Model
 
-**Simulate** runs 20 layouts with a checkpoint (`best_success`, `best`, `final`, `checkpoint-N`; the latest by default), all at once in ManiSkill's parallel envs, and logs the success rate, an episode table and videos to the same W&B run. `train.simulate_after` runs it from training once training ends.
-
-Two evaluations exist. **Eval** is the Trainer's held-out loss (`eval/loss`): predicted actions against demo actions. **Simulate** measures whether the policy actually pushes the cube to the goal (`simulate/...`). Loss can fall while success stays at zero, so simulate is the number that decides; with `train.split=frame` and the row's own demo retrievable, eval loss has fallen sharply while success went to zero.
-
-## Config
-
-`config/push_cube.yaml` holds one experiment. Its values reproduce `rag_model.py` at commit 8b9a9e3, and each switch's comment names the alternative (`train.split`, `train.exclude_own_episode`, `train.lr_scheduler`). Three differences it cannot reach: `query_fetch` trains here, through `CopyGrad`, where `rag_model.py`'s search left it untrained; the 3 of 6 neighbours kept and the truth row are drawn per row, where `rag_model.py` drew each once per batch, and eval and simulate keep the nearest 3 rather than a random 3; and embedding normalization, since `rag_model.py`'s data was not normalized, so matching it needs `encoder.normalize=false` when encoding.
-
-Datasets from `rag_model.py` load directly; `data.load` converts them. Runs saved before a setting existed simulate with `push_cube.yaml`'s value for it.
+Image and state MLPs encode the frame and `QueryMLP` turns it into orthogonal queries. Each query searches the memory with `W q` and attends over the rows it fetched with `W^T W q`, so the action loss trains the search. A row's key is its image and state features, its value what its demo did next. The ACT-style head reads the attention's tokens and the raw state. Rows from the frame's own demo are never retrieved.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `config/` | experiment yamls and their loader |
-| `data/` | demo reading, encoding, dataset loading, retrieval, train/eval splits |
-| `models/` | image encoders and the `RagAct` policy |
-| `train/rag_act.py` | training |
+| `config.py` | settings, presets, run loader |
+| `data/` | demos, encoding, datasets, retrieval, splits |
+| `models/` | image encoders and `RagAct` |
+| `train.py`, `callbacks.py` | training and its bookkeeping |
 | `simulate.py` | closed-loop simulation |
+| `launch.py`, `nautilus.sh` | queue a run as a Nautilus Job, and the Job's command |
 | `visuals/` | frames and video |

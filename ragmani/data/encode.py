@@ -1,9 +1,8 @@
 """Replays ManiSkill demos and stores one row per step: the frame's embedding, robot state and the action chunk ahead.
 
-The only data module that imports ManiSkill, since it renders. Run as `python -m ragmani.data.encode <config> [section.key=value ...]`.
+The only data module that imports ManiSkill, since it renders. Run as `python -m ragmani.data.encode <preset> [--section.key value ...]`.
 """
 import itertools
-import sys
 from collections import defaultdict
 
 import gymnasium as gym
@@ -13,7 +12,7 @@ import torch
 from datasets import Array2D, Dataset, Features, List, Value
 from tqdm import tqdm
 
-from ragmani.config import load
+from ragmani.config import cli
 from ragmani.data.trajectories import Trajectories
 from ragmani.models import ENCODERS
 
@@ -46,10 +45,9 @@ def rows(episode, env, encoder, chunk, batch_size):
     }
 
 
-def main(name, overrides):
-  config = load(name, overrides)
+def main(config):
   device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-  encoder = ENCODERS[config.encoder.name](config.encoder, device, config.paths.cache)
+  encoder = ENCODERS[config.encoder.name](config.encoder, device)
   for task in config.tasks:
     if task.dataset.exists(): print(f"{task.env_id}: {task.dataset} exists, skipped")
     else: encode(task, config, encoder)
@@ -64,7 +62,7 @@ def encode(task, config, encoder):
 
   columns = defaultdict(list)
   for episode in tqdm(episodes, total=config.encode.max_episodes or len(trajectories)):
-    for row in rows(episode, env, encoder, config.model.chunk, config.encode.batch_size):
+    for row in rows(episode, env, encoder, config.model.chunk_len, config.encode.batch_size):
       for key, value in row.items(): columns[key].append(value)
 
   state_dim, action_dim = len(columns["state"][0]), columns["action"][0].shape[1]
@@ -74,8 +72,8 @@ def encode(task, config, encoder):
     "image_emb": List(Value("float32"), length=encoder.dim),
     "state": List(Value("float32"), length=state_dim),
     "next_state": List(Value("float32"), length=state_dim),
-    "action": Array2D((config.model.chunk, action_dim), "float32"),
-    "is_pad": List(Value("bool"), length=config.model.chunk),
+    "action": Array2D((config.model.chunk_len, action_dim), "float32"),
+    "is_pad": List(Value("bool"), length=config.model.chunk_len),
   })
   env.close()
   Dataset.from_dict(columns, features=features).save_to_disk(task.dataset)
@@ -83,4 +81,4 @@ def encode(task, config, encoder):
 
 
 if __name__ == "__main__":
-  main(sys.argv[1], sys.argv[2:])
+  main(cli(description=__doc__.splitlines()[0]))

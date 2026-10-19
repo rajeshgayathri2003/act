@@ -33,6 +33,7 @@ dependencies = [
   "detr",
   "pin>=4.1.0", # Pinocchio IK for pd_ee_delta_pos; SAPIEN's macOS wheel ships without it
   "wandb",
+  "tyro>=1.0.16",
 ]
 
 [dependency-groups]

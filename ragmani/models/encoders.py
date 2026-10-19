@@ -13,12 +13,13 @@ class Encoder(ABC):
   """Frames in, one embedding per frame out: (B, H, W, 3) uint8 to (B, dim) float32 on the CPU."""
 
   model = AutoModel  # transformers class that loads the vision weights; the instance replaces it in __init__
+  model_id: str  # the weights on the Hugging Face hub
 
-  def __init__(self, config, device="cpu", cache_dir=None):
+  def __init__(self, config, device="cpu"):
     self.config = config
     self.device = device
-    self.processor = AutoImageProcessor.from_pretrained(config.model_id, cache_dir=cache_dir)  # image side only, so SigLIP needs no tokenizer
-    self.model = self.model.from_pretrained(config.model_id, cache_dir=cache_dir).to(device).eval()
+    self.processor = AutoImageProcessor.from_pretrained(self.model_id)  # image side only, so SigLIP needs no tokenizer
+    self.model = self.model.from_pretrained(self.model_id).to(device).eval()
     self.dim = self.model.config.hidden_size
 
   @abstractmethod
@@ -38,12 +39,15 @@ class SiglipEncoder(Encoder):
   """SigLIP's attention-pooled image embedding, the same vector as SiglipModel.get_image_features."""
 
   model = SiglipVisionModel  # vision tower only; the text tower is never used
+  model_id = "google/siglip-base-patch16-224"
 
   def pool(self, outputs): return outputs.pooler_output
 
 
 class IjepaEncoder(Encoder):
   """I-JEPA patch tokens averaged into one vector; the model has no pooled output of its own."""
+
+  model_id = "jmtzt/ijepa_vith16_1k"
 
   def pool(self, outputs): return outputs.last_hidden_state.mean(dim=1)
 

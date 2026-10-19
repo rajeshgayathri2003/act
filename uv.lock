@@ -72,6 +72,7 @@ dependencies = [
     { name = "torchvision", version = "0.29.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
     { name = "tqdm" },
     { name = "transformers" },
+    { name = "tyro" },
     { name = "wandb" },
 ]
 
@@ -116,6 +117,7 @@ requires-dist = [
     { name = "torchvision", marker = "sys_platform == 'linux'", index = "https://download.pytorch.org/whl/cu130" },
     { name = "tqdm" },
     { name = "transformers" },
+    { name = "tyro", specifier = ">=1.0.16" },
     { name = "wandb" },
 ]
 
