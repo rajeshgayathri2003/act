@@ -42,20 +42,34 @@ def retrieval_metrics(idx, inputs, retriever, action, exclude):
   }
 
 
+def fade(progress, fade_by):
+  """The chance a row still gets the faded-in help at progress (0 to 1) through training: a cosine from 1 to 0 over the first fade_by of the run, 0 after; 0 throughout when fade_by is 0."""
+  return 0.5 * (1 + math.cos(math.pi * min(progress / fade_by, 1))) if fade_by else 0.0
+
+
 def collate(rows):
   return {key: torch.stack([row[key] for row in rows]) for key in COLUMNS}
 
 
 class RagActTrainer(Trainer):
-  """Runs RagAct with the retriever: the loss is the action L1 on the demo's real steps plus the end-of-demo BCE."""
+  """Runs RagAct with the retriever: the loss is the action L1 on the demo's real steps plus the end-of-demo BCE.
 
-  def __init__(self, *args, retriever, pad_weight, **kwargs):
+  Early in training each row also gets its own true transition as one more retrieved row, fading out over train.fade_by of the run.
+  """
+
+  def __init__(self, *args, retriever, pad_weight, fade_by, **kwargs):
     super().__init__(*args, **kwargs)
     self.retriever = retriever
     self.pad_weight = pad_weight
+    self.fade_by = fade_by
 
   def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-    pred_action, pred_pad, idx = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=inputs["episode"]) # the search skips rows from its demo
+    truth, add_truth = None, None
+    if model.training:
+      progress = self.state.global_step / max(self.state.max_steps, 1)  # 0 at the start of the run, 1 at the end
+      truth = (inputs["action"], inputs["next_state"])
+      add_truth = torch.rand(len(inputs["state"]), device=inputs["state"].device) < fade(progress, self.fade_by)  # each row on its own draw
+    pred_action, pred_pad, idx = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=inputs["episode"], truth=truth, add_truth=add_truth) # the search skips rows from its demo
 
     target_action = model.action.standardize(inputs["action"])
     real_mask = (~inputs["is_pad"]).unsqueeze(-1).float()  # 1 on chunk steps before the demo's end
@@ -159,6 +173,7 @@ def main(c):
     callbacks=callbacks,
     retriever=retriever,
     pad_weight=c.train.pad_weight,
+    fade_by=c.train.fade_by,
   )
 
   # the run folder; simulate rebuilds the model from the c W&B stores, whatever the presets say later

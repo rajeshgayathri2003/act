@@ -120,6 +120,7 @@ class TrainConfig:
   weight_decay: float = 1.0e-4
   max_grad_norm: float = 1.0  # 0 turns clipping off
   pad_weight: float = 1.0  # the end-of-demo loss, relative to the action loss
+  fade_by: float = 0.5  # share of training over which the faded-in help (here each row's own transition as one more retrieved row) goes from every row to none, on a cosine; eval and simulate never get it
 
   split: Literal["frame", "episode"] = "episode"  # frame holds out random rows, episode whole demos
   eval_fraction: float = 0.2

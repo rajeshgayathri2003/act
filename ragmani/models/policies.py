@@ -124,7 +124,8 @@ class RagAct(nn.Module):
     model.load_state_dict(load_file(Path(checkpoint_dir) / "model.safetensors"))
     return model
 
-  def forward(self, image_emb, state, retriever: Retriever, exclude=None):
+  def forward(self, image_emb, state, retriever: Retriever, exclude=None, truth=None, add_truth=None):
+    """truth is each row's own raw (action chunk, next_state), added as one more key and value where add_truth (B,) is True."""
     state = self.state.standardize(state)
 
     # encode the observation, then make one orthogonal query per channel
@@ -144,14 +145,23 @@ class RagAct(nn.Module):
     v = torch.cat([self.action.standardize(mem["action"][:, :, 0]),
                    self.state.standardize(mem["next_state"])], dim=-1)  # (B, rows, d_action + d_state)
 
+    # the truth row: this frame's own key and what its demo did next, first, hidden where add_truth is False
+    hide_truth = None
+    if truth is not None:
+      truth_action, truth_next_state = truth
+      truth_v = torch.cat([self.action.standardize(truth_action[:, 0]), self.state.standardize(truth_next_state)], dim=-1)
+      k, v = torch.cat([combined[:, None], k], dim=1), torch.cat([truth_v[:, None], v], dim=1)
+      hide_truth = F.pad(~add_truth[:, None], (0, k.shape[1] - 1))  # (B, rows): True means ignore
+
     q_attn = q_fetch @ self.query_fetch.weight  # W^T W q: (B, n_queries, d_hidden)
-    tokens, attn_weight = self.query_attention(q_attn, k, v)  # (B, n_queries, d_hidden), (B, n_queries, rows)
+    tokens, attn_weight = self.query_attention(q_attn, k, v, key_padding_mask=hide_truth)  # (B, n_queries, d_hidden), (B, n_queries, rows)
 
     self.diagnostics = {
       "model/combined_magnitude": combined.detach().norm(dim=-1).mean(),
       "model/q_fetch_magnitude": q_fetch.detach().norm(dim=-1).mean(),
       "retrieval/attn_entropy": -(attn_weight * attn_weight.clamp_min(1e-9).log()).sum(-1).mean().detach(),  # ln(rows) is uniform
     }
+    if truth is not None and add_truth.any(): self.diagnostics["retrieval/attn_weight_on_truth"] = attn_weight.detach()[add_truth][..., 0].mean()
 
     action, is_pad = self.head(tokens, combined.detach()[:, None])  # the frame's image and state features, detached so the encoders learn only from retrieval
     return action, is_pad.squeeze(-1), idx
