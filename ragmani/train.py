@@ -23,6 +23,8 @@ from ragmani.data.splits import SPLITS
 from ragmani.models import RagAct
 
 COLUMNS = ["image_emb", "state", "next_state", "action", "is_pad", "episode"]
+ACTION_TEMPERATURE = 0.1  # the retrieval loss's target: candidates whose action is this much further from the truth's get e times less weight
+SCORE_TEMPERATURE = 0.01  # divides the cosine of q_fetch and each candidate; the embeddings are close together, so a small one spreads the scores
 
 
 def retrieval_metrics(idx, inputs, retriever, action, exclude):
@@ -42,20 +44,51 @@ def retrieval_metrics(idx, inputs, retriever, action, exclude):
   }
 
 
+def retrieval_loss(q_fetch, idx, inputs, retriever, action, exclude):
+  """Cross-entropy teaching q_fetch to rank candidate rows by how close their first action is to the frame's true one: each query's own kept rows, the rows the frame's own image embedding finds, and random rows."""
+  batch, queries, _ = q_fetch.shape
+  count = idx.shape[1]
+  query_idx = idx.view(batch, queries, -1)  # the rows each query's own search kept
+  image_idx = retriever.search(inputs["image_emb"][:, None].float(), count, exclude).view(batch, 1, count).expand(-1, queries, -1)  # the rows a search with the current frame's own image embedding returns, shared by its queries
+  random_idx = torch.randint(0, len(retriever.rows["image_emb"]), (batch, queries, count), device=idx.device)  # easy negatives
+  candidates = torch.cat([query_idx, image_idx, random_idx], dim=-1)  # (B, queries, candidates): every query ranks all of them against how close each row's action is to the frame's true one
+  q_fetch_direction = F.normalize(q_fetch, dim=-1, eps=0.05)
+  scores = (q_fetch_direction[:, :, None] * retriever.rows["image_emb"][candidates].float()).sum(dim=-1) / SCORE_TEMPERATURE  # cosine, since the embeddings are unit length
+  truth_action = action.standardize(inputs["action"][:, 0])
+  distance = (action.standardize(retriever.rows["action"][candidates][..., 0, :]) - truth_action[:, None, None]).abs().mean(dim=-1)
+  own = retriever.rows["episode"][candidates] == exclude[:, None, None] if exclude is not None else torch.zeros_like(candidates, dtype=torch.bool)  # random rows from the frame's own demo, which the search never returns
+  target = torch.softmax(-distance.masked_fill(own, math.inf) / ACTION_TEMPERATURE, dim=-1)
+  return -(target * torch.log_softmax(scores.masked_fill(own, -math.inf), dim=-1).masked_fill(own, 0)).sum(dim=-1).mean()
+
+
+def fade(progress, fade_by):
+  """The chance a row still gets the faded-in help at progress (0 to 1) through training: a cosine from 1 to 0 over the first fade_by of the run, 0 after; 0 throughout when fade_by is 0."""
+  return 0.5 * (1 + math.cos(math.pi * min(progress / fade_by, 1))) if fade_by else 0.0
+
+
 def collate(rows):
   return {key: torch.stack([row[key] for row in rows]) for key in COLUMNS}
 
 
 class RagActTrainer(Trainer):
-  """Runs RagAct with the retriever: the loss is the action L1 on the demo's real steps plus the end-of-demo BCE."""
+  """Runs RagAct with the retriever: the loss is the action L1 on the demo's real steps plus the end-of-demo BCE, and in training the retrieval loss.
 
-  def __init__(self, *args, retriever, pad_weight, **kwargs):
+  Early in training each row's search also adds the frame's own image, fading out over train.fade_by of the run.
+  """
+
+  def __init__(self, *args, retriever, pad_weight, retrieval_weight, fade_by, **kwargs):
     super().__init__(*args, **kwargs)
     self.retriever = retriever
     self.pad_weight = pad_weight
+    self.retrieval_weight = retrieval_weight
+    self.fade_by = fade_by
 
   def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-    pred_action, pred_pad, idx = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=inputs["episode"]) # the search skips rows from its demo
+    add_image_emb = None
+    if model.training:
+      progress = self.state.global_step / max(self.state.max_steps, 1)  # 0 at the start of the run, 1 at the end
+      add_image_emb = torch.rand(len(inputs["state"]), device=inputs["state"].device) < fade(progress, self.fade_by)  # each row on its own draw
+    pred_action, pred_pad, idx = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=inputs["episode"], add_image_emb=add_image_emb) # the search skips rows from its demo
 
     target_action = model.action.standardize(inputs["action"])
     real_mask = (~inputs["is_pad"]).unsqueeze(-1).float()  # 1 on chunk steps before the demo's end
@@ -63,6 +96,7 @@ class RagActTrainer(Trainer):
     losses = {
       "action_l1": error.sum() / (real_mask.sum() * pred_action.shape[-1]).clamp(min=1),  # mean over real steps only
       "pad_bce": F.binary_cross_entropy_with_logits(pred_pad, inputs["is_pad"].float()),
+      "retrieval": retrieval_loss(model.q_fetch, idx, inputs, self.retriever, model.action, inputs["episode"]),
     }
 
     if not model.training:
@@ -76,7 +110,7 @@ class RagActTrainer(Trainer):
         **{name: value.item() for name, value in model.diagnostics.items()},
       })
 
-    loss = losses["action_l1"] + self.pad_weight * losses["pad_bce"]
+    loss = losses["action_l1"] + self.pad_weight * losses["pad_bce"] + (self.retrieval_weight * losses["retrieval"] if model.training else 0)  # eval_loss leaves retrieval out
     return (loss, {"action": pred_action, "is_pad": pred_pad}) if return_outputs else loss
 
   def evaluate(self, *args, **kwargs):
@@ -159,6 +193,8 @@ def main(c):
     callbacks=callbacks,
     retriever=retriever,
     pad_weight=c.train.pad_weight,
+    retrieval_weight=c.train.retrieval_weight,
+    fade_by=c.train.fade_by,
   )
 
   # the run folder; simulate rebuilds the model from the c W&B stores, whatever the presets say later

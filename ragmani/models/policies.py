@@ -109,6 +109,7 @@ class RagAct(nn.Module):
     self.query_mlp = QueryMLP(c)
 
     self.query_fetch = nn.Linear(c.d_hidden, c.d_image, bias=False)  # W: queries to image embedding's space
+    nn.init.zeros_(self.query_fetch.weight)  # the search starts as the frame's own image search; the retrieval loss moves W off 0
     self.query_attention = nn.MultiheadAttention(c.d_hidden, c.n_attn_heads, kdim=c.d_key, vdim=c.d_action + c.d_state, batch_first=True)
     # note for vdim I did state + action versus we had 2*state + action before
 
@@ -124,7 +125,8 @@ class RagAct(nn.Module):
     model.load_state_dict(load_file(Path(checkpoint_dir) / "model.safetensors"))
     return model
 
-  def forward(self, image_emb, state, retriever: Retriever, exclude=None):
+  def forward(self, image_emb, state, retriever: Retriever, exclude=None, add_image_emb=None):
+    """add_image_emb (B,) adds the frame's own image embedding to those rows' searches; left None, as at eval and simulate, none get it."""
     state = self.state.standardize(state)
 
     # encode the observation, then make one orthogonal query per channel
@@ -133,7 +135,10 @@ class RagAct(nn.Module):
 
     # retrieve step
     q_fetch = self.query_fetch(q_stack) # W q: (B, n_queries, d_image)
-    topk_idx = retriever.search(q_fetch, self.c.n_neighbours, exclude)  # (B, n_queries, n_neighbours), best first
+    if add_image_emb is None: add_image_emb = torch.zeros(len(q_fetch), dtype=torch.bool, device=q_fetch.device)
+    q_search = image_emb[:, None].float() * add_image_emb[:, None, None] + q_fetch  # W q corrects the frame's own image search where add_image_emb
+    self.q_fetch = q_fetch  # read by training's retrieval loss
+    topk_idx = retriever.search(q_search, self.c.n_neighbours, exclude)  # (B, n_queries, n_neighbours), best first
     # if self.training: topk_idx = topk_idx.gather(-1, torch.rand(topk_idx.shape, device=topk_idx.device).argsort(dim=-1))  # shuffled, so training keeps a random few, like dropout
     idx = topk_idx[..., :self.c.n_keep].flatten(1)  # every query's rows together
     mem = retriever.gather(idx)
