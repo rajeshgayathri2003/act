@@ -185,8 +185,7 @@ def main(c):
   ) as run:
     wandb_id.write_text(run.id)  # simulate reattaches to this run
     run.define_metric("eval/loss", summary="min")  # the summary keeps each run's best, so runs sort and filter by it
-    run.define_metric("simulate/training_success", summary="max")
-    run.define_metric("simulate/training_success_rate", summary="max")
+    run.define_metric("check/success_rate", summary="max")
 
     trainer.train(resume_from_checkpoint=latest)  # report_to="wandb" logs into the open run
     trainer.save_model(str(run_dir / "final"))

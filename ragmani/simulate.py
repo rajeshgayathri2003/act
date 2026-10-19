@@ -29,7 +29,6 @@ MAX_STEPS = 128   # the longest demo; test.py allowed 400
 SEED = 42         # picks the episodes' starting layouts; test.py used 1
 CHECK_SEED = 7    # picks the layouts scored during training; not SEED, so choosing best_success never sees the layouts simulate reports
 ANNOTATE = True   # step and action written on each video frame
-VIDEOS = 3        # episode videos uploaded to W&B besides the grid; all stay on disk
 ENSEMBLE_DECAY = 0.01  # ACT's k in exp(-k * i): older chunks count slightly more
 
 
@@ -54,6 +53,11 @@ EXECUTIONS = {  # which action each env runs at a step, from the (start step, ch
 def environment(task, count=1):
   """count copies of the task's env stepped together, on GPU physics when more than one, under the demos' controller; unwrapped for set_state_dict."""
   return gym.make(task.env_id, num_envs=count, sim_backend="physx_cuda" if count > 1 else "auto", obs_mode="state_dict", control_mode=Trajectories(task.traj).control_mode, render_mode="rgb_array").unwrapped
+
+
+def key(section, tasks, task, name):
+  """A W&B key under section (check or sim), with the task's env_id between when the run has several tasks."""
+  return f"{section}/{name}" if len(tasks) == 1 else f"{section}/{task.env_id}/{name}"
 
 
 def share(count, tasks, seed):
@@ -97,7 +101,7 @@ def episodes(model, retriever, encoder, envs, seeds, max_steps=MAX_STEPS, execut
 
 
 class Callback(TrainerCallback):
-  """For the Trainer: every few epochs, a video of one fixed layout and the success rate over other fixed layouts, kept as best_success when highest.
+  """For the Trainer: every few epochs, a check under check/: the success rate over fixed layouts (kept as best_success when highest), their grid, and a video of one more fixed layout.
 
   Each check also logs retrieval/neighbours: for one fixed held-out frame, the rows a query of its own embedding finds and the rows each search kept.
   """
@@ -136,22 +140,22 @@ class Callback(TrainerCallback):
       (self.config.run_dir / "best_success" / "success_rate.json").write_text(json.dumps({"success_rate": self.highest, "epoch": state.epoch}))
     wandb.log({
       **logs,
-      **({"simulate/training_success_rate": float(np.mean(every))} if every else {}),  # over every scored episode, whichever its task
+      **({"check/success_rate": float(np.mean(every))} if every else {}),  # over every scored episode, whichever its task
       "retrieval/neighbours": wandb.Image(neighbours, caption=f"epoch {round(state.epoch)}: truth, then each search's kept rows"),
     })
 
   def log(self, task, epoch, recorded, success, others, scored):
-    """One task's check: its videos on disk and its W&B entries, under simulate/<env_id>/ when the run has several tasks."""
-    folder, prefix = (("training", "simulate/") if len(self.config.tasks) == 1 else (f"training/{task.env_id}", f"simulate/{task.env_id}/"))
+    """One task's check: its videos on disk and its W&B entries, under check/<env_id>/ when the run has several tasks."""
+    folder = "training" if len(self.config.tasks) == 1 else f"training/{task.env_id}"
     path = self.config.run_dir / "simulate" / folder / f"epoch_{epoch:04d}_{'success' if success else 'fail'}.mp4"
     video.write(path, recorded)
     grid_path = path.with_name(f"epoch_{epoch:04d}_grid.mp4")
     video.write(grid_path, video.grid([frames for frames, _, _ in others], tile=160, successes=scored))  # every scored layout, bordered green or red
+    tasks = self.config.tasks
     return {
-      f"{prefix}training_success": float(success), f"{prefix}training_steps": len(recorded),
-      **({f"{prefix}training_success_rate": float(np.mean(scored))} if scored and len(self.config.tasks) > 1 else {}),
-      f"{prefix}training_episode": wandb.Video(str(path), caption=f"epoch {epoch}: {path.stem}"),
-      f"{prefix}training_grid": wandb.Video(str(grid_path), caption=f"epoch {epoch}: {sum(scored)}/{len(scored)} succeeded"),
+      **({key("check", tasks, task, "success_rate"): float(np.mean(scored))} if scored and len(tasks) > 1 else {}),
+      key("check", tasks, task, "video"): wandb.Video(str(path), caption=f"epoch {epoch}: {path.stem}"),
+      key("check", tasks, task, "grid"): wandb.Video(str(grid_path), caption=f"epoch {epoch}: {sum(scored)}/{len(scored)} succeeded"),
     }
 
   @torch.no_grad()
@@ -196,13 +200,12 @@ def main(arguments):
   outcomes = episodes(model, retriever, encoder, envs, [task_seeds for _, task_seeds in runs], arguments.max_steps, arguments.execution)
   for env in envs: env.close()  # training calls main once per checkpoint, and each env holds GPU physics memory
 
-  logs, every = {}, []
+  logs, every, table = {}, [], []
   for (task, task_seeds), task_outcomes in zip(runs, outcomes):
-    folder, prefix = (output, "simulate/") if len(config.tasks) == 1 else (output / task.env_id, f"simulate/{task.env_id}/")
-    results, recordings, videos = [], [], []
+    folder = output if len(config.tasks) == 1 else output / task.env_id
+    results, recordings = [], []
     for index, (seed, (recorded, success, rewards)) in enumerate(zip(task_seeds, task_outcomes)):
-      videos.append(folder / f"episode_{index:02d}_seed_{seed}_{'success' if success else 'fail'}.mp4")
-      video.write(videos[-1], recorded)
+      video.write(folder / f"episode_{index:02d}_seed_{seed}_{'success' if success else 'fail'}.mp4", recorded)
       recordings.append(recorded)
       results.append({"episode": index, "seed": seed, "success": success, "steps": len(recorded), "mean_reward": float(np.mean(rewards))})
       print(f"{task.env_id} episode {index}: Total Reward {results[-1]['mean_reward']:.4f} Success {success} Timestep {len(recorded)}")
@@ -212,22 +215,20 @@ def main(arguments):
     every += [result["success"] for result in results]
     (folder / "summary.json").write_text(json.dumps({"checkpoint": str(checkpoint), "env_id": task.env_id, "step": trained["train/global_step"], "epoch": trained["train/epoch"], "execution": arguments.execution, "success_rate": successes / len(results), "episodes": results}, indent=2))
     print(f"{task.env_id} success rate: {successes}/{len(results)} -> {folder}")
+    table += [[checkpoint.name, task.env_id, trained["train/global_step"], trained["train/epoch"], arguments.execution, arguments.max_steps, *result.values()] for result in results]
     logs |= {
-      **({f"{prefix}success_rate": successes / len(results)} if len(config.tasks) > 1 else {}),
-      f"{prefix}episodes": wandb.Table(columns=["checkpoint", "step", "epoch", *results[0]], data=[[checkpoint.name, trained["train/global_step"], trained["train/epoch"], *result.values()] for result in results]),
-      f"{prefix}grid": wandb.Video(str(folder / "grid.mp4"), caption=checkpoint.name),
-      **{f"{prefix}episode_{index:02d}": wandb.Video(str(path), caption=f"{checkpoint.name}: {path.stem}") for index, path in enumerate(videos[:VIDEOS])},  # stable keys, so a panel steps through checkpoints
+      **({key("sim", config.tasks, task, "success_rate"): successes / len(results)} if len(config.tasks) > 1 else {}),
+      key("sim", config.tasks, task, "grid"): wandb.Video(str(folder / "grid.mp4"), caption=f"{checkpoint.name}: {successes}/{len(results)} succeeded"),
     }
   print(f"Success rate: {sum(every)}/{len(every)} over {len(runs)} task(s) -> {output}")
 
   with wandb.init(entity=config.wandb.entity, project=config.wandb.project, group=config.wandb.group, mode=config.wandb.mode, dir=run_dir.parent, name=run_dir.name, id=id_file.read_text().strip() if id_file.exists() else None, resume="allow") as run:
     id_file.write_text(run.id)
-    run.define_metric("simulate/success_rate", summary="max")  # the run's best checkpoint score, for sorting runs
+    run.define_metric("sim/success_rate", summary="max")  # the run's best checkpoint score, for sorting runs
     run.log({
-      **{key: value for key, value in trained.items() if value is not None},  # absent when the checkpoint has no trainer_state.json
-      "simulate/success_rate": float(np.mean(every)),  # over every episode, whichever its task
-      "simulate/max_steps": arguments.max_steps,
-      "simulate/execution": arguments.execution,
+      **{name: value for name, value in trained.items() if value is not None},  # absent when the checkpoint has no trainer_state.json
+      "sim/success_rate": float(np.mean(every)),  # over every episode, whichever its task
+      "sim/episodes": wandb.Table(columns=["checkpoint", "task", "step", "epoch", "execution", "max_steps", "episode", "seed", "success", "steps", "mean_reward"], data=table),
       **logs,
     })
 
