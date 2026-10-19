@@ -68,8 +68,7 @@ class ActionHead(nn.Module):
   def __init__(self, c: ModelConfig):
     super().__init__()
     self.token_proj = nn.Linear(c.d_hidden, c.d_model)
-    self.combined_proj = nn.Linear(c.d_key, c.d_model)
-    self.source_pos = nn.Embedding(c.n_queries + 1, c.d_model)  # one position per source token: the query tokens and the frame
+    self.source_pos = nn.Embedding(c.n_queries, c.d_model)  # one position per source token: the query tokens only
     self.action_queries = nn.Embedding(c.chunk_len, c.d_model)  # one vector per step -> decoder maps to each action
 
     self.transformer = (nn.Transformer(
@@ -80,8 +79,8 @@ class ActionHead(nn.Module):
     self.action_out = nn.Linear(c.d_model, c.d_action)
     self.is_pad_out = nn.Linear(c.d_model, 1)
 
-  def forward(self, tokens, combined):  # tokens: (B, n_queries, d_hidden) | combined: (B, 1, d_key)
-    source = torch.cat([self.token_proj(tokens), self.combined_proj(combined)], dim=1) + self.source_pos.weight  # (B, n_queries + 1, d_model), tag each token with position
+  def forward(self, tokens):  # tokens: (B, n_queries, d_hidden)
+    source = self.token_proj(tokens) + self.source_pos.weight  # (B, n_queries, d_model), tag each token with position
     out = self.transformer(source, self.action_queries.weight.expand(len(tokens), -1, -1))  # (B, chunk_len, d_model)
     return self.action_out(out), self.is_pad_out(out)
 
@@ -153,5 +152,5 @@ class RagAct(nn.Module):
       "retrieval/attn_entropy": -(attn_weight * attn_weight.clamp_min(1e-9).log()).sum(-1).mean().detach(),  # ln(rows) is uniform
     }
 
-    action, is_pad = self.head(tokens, combined.detach()[:, None])  # the frame's image and state features, detached so the encoders learn only from retrieval
+    action, is_pad = self.head(tokens)  # the query tokens only: everything about the frame comes through retrieval
     return action, is_pad.squeeze(-1), idx
