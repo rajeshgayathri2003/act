@@ -162,8 +162,20 @@ PUSH_CUBE = TaskConfig("PushCube-v1", Path("PushCube-v1/trajectory.state.pd_ee_d
 PICK_CUBE = TaskConfig("PickCube-v1", Path("PickCube-v1/trajectory.state.pd_ee_delta_pos.cpu.h5"), Path("pick_cube_jepa"))  # the motion-planning demos converted to pd_ee_delta_pos
 
 
+PUSH_CUBE_TRAIN = TrainConfig(
+  lr=3.0e-5,
+  lr_scheduler=SchedulerType.CONSTANT,
+  warmup_ratio=0.0,  # the constant schedule takes no warmup
+  save_epochs=50,
+  resume=True,
+  simulate_epochs=50,
+  simulate_episodes=20,
+  simulate_after=SimulateAfterConfig(episodes=20),
+)
+
+
 PRESETS = {
-  "push_cube": ("PushCube-v1, end-effector delta-position control, I-JEPA image embeddings", Config()),
+  "push_cube": ("PushCube-v1, end-effector delta-position control, I-JEPA image embeddings, constant lr 3e-5", Config(train=PUSH_CUBE_TRAIN)),
   "push_pick_cube": ("PushCube-v1 and PickCube-v1 in one model: both tasks' demos fill one memory, and simulate shares its episodes between them", Config(name="push_pick_cube", tasks=[PUSH_CUBE, PICK_CUBE], run_dir=Path("runs/push_pick_cube"))),
 }
 
