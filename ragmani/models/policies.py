@@ -50,18 +50,8 @@ class QueryMLP(nn.Module):
       for _ in range(c.n_queries)
     )
 
-  def forward(self, x):  # (B, combined) -> (B, n_queries, d_hidden)
-    stack = torch.stack([channel(x) for channel in self.channels], dim=1)
-    return orthogonalize(stack)
-
-def orthogonalize(vectors):
-  """Gram-Schmidt across the query axis of (B, queries, D): each query loses its projection onto the ones before it."""
-  basis = []
-  for vector in vectors.unbind(dim=1):
-    orthogonal = vector
-    for previous in basis: orthogonal = orthogonal - (vector * previous).sum(-1, keepdim=True) / (previous * previous).sum(-1, keepdim=True) * previous
-    basis.append(orthogonal)
-  return torch.stack(basis, dim=1)
+  def forward(self, x):  # (B, combined) -> (B, n_queries, d_hidden), each query free to point anywhere
+    return torch.stack([channel(x) for channel in self.channels], dim=1)
 
 
 class ActionHead(nn.Module):
@@ -127,7 +117,7 @@ class RagAct(nn.Module):
   def forward(self, image_emb, state, retriever: Retriever, exclude=None):
     state = self.state.standardize(state)
 
-    # encode the observation, then make one orthogonal query per channel
+    # encode the observation, then make one query per channel
     combined = torch.cat([self.image_mlp(image_emb), self.state_mlp(state)], dim=-1)  # (B, image_out + state_out = d_key)
     q_stack = self.query_mlp(combined) # (B, n_queries, d_key)
 
