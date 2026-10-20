@@ -65,6 +65,14 @@ class RetrievalConfig:
 
 
 @dataclass
+class CodebookConfig:
+  bins: int = 65
+  low: float = -5.0  # bin range, in standardized action units when model.normalize is on, raw ones otherwise; actions outside clamp to the ends
+  high: float = 5.0
+  symlog: bool = True  # True spaces the bins evenly in symlog space, finer near zero
+
+
+@dataclass
 class ModelConfig:
   d_image: int = 1280  # the image embedding's width; training and simulate set it from the dataset
   image_layers: list[int] = field(default_factory=lambda: [512, 256])  # hidden layer sizes taking the image embedding down to d_image_out
@@ -91,6 +99,8 @@ class ModelConfig:
   decoder_layers: int = 4
   feedforward: int = 1024
   dropout: float = 0.1
+  action_head: Literal["linear", "codebook"] = "linear"  # codebook predicts each action dimension as logits over fixed bins, trained by cross-entropy (DreamerV3 two-hot)
+  codebook: CodebookConfig = field(default_factory=CodebookConfig)  # read only when action_head is codebook
 
   def __post_init__(self):
     if self.d_hidden % self.n_attn_heads:

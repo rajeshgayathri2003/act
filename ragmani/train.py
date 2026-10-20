@@ -67,7 +67,7 @@ def collate(rows):
 
 
 class RagActTrainer(Trainer):
-  """Runs RagAct with the retriever: the loss is the action L1 on the demo's real steps plus the end-of-demo BCE."""
+  """Runs RagAct with the retriever: the loss is the action L1 (cross-entropy with the codebook head) on the demo's real steps plus the end-of-demo BCE."""
 
   def __init__(self, *args, retriever, c: Config, **kwargs):
     super().__init__(*args, **kwargs)
@@ -84,6 +84,8 @@ class RagActTrainer(Trainer):
       "action_l1": error.sum() / (real_mask.sum() * pred_action.shape[-1]).clamp(min=1),  # mean over real steps only
       "pad_bce": F.binary_cross_entropy_with_logits(pred_pad, inputs["is_pad"].float()),
     }
+    logits = model.action_logits
+    if logits is not None: losses["action_ce"] = (model.head.codebook.loss(logits, target_action) * real_mask).sum() / (real_mask.sum() * pred_action.shape[-1]).clamp(min=1)
 
     if not model.training:
       self.eval_rows += len(inputs["state"])
@@ -96,7 +98,8 @@ class RagActTrainer(Trainer):
         **{name: value.item() for name, value in model.diagnostics.items()},
       })
 
-    loss = losses["action_l1"] + self.c.train.pad_weight * losses["pad_bce"]
+    action_loss = "action_ce" if logits is not None and model.training else "action_l1"  # eval_loss stays L1, so best/ compares across either head
+    loss = losses[action_loss] + self.pad_weight * losses["pad_bce"]
     return (loss, {"action": pred_action, "is_pad": pred_pad}) if return_outputs else loss
 
   def evaluate(self, *args, **kwargs):
