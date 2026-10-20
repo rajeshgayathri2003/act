@@ -284,6 +284,13 @@ class ActionModel(PreTrainedModel):
         self.T = 20
         self.add_gt = True  # boolean flag: whether to include GT values based on training progress
 
+        # required by transformers v5 (sets all_tied_weights_keys etc. used by from_pretrained)
+        self.post_init()
+
+    def _init_weights(self, module):
+        # keep PyTorch's default init (and the DETR transformer's xavier init) instead of HF's normal(0, 0.02)
+        pass
+
     def init_external(self, indices=None):
         """Load CLIP model, dataset, and FAISS index. Call after from_pretrained or before training.
 
@@ -470,7 +477,7 @@ class ActionModel(PreTrainedModel):
         rag_tokens, state_tok = self.generate_latent(img, state, next_state, action_gt, return_tokens=True)
         # rag_tokens: (B, 3, 64), state_tok: (B, 1, 9)
 
-        action_pred, is_pad_hat = self.act_head(rag_tokens, state_tok)  # (B, T, 4), (B, T, 1)
+        action_pred, is_pad_hat, _ = self.act_head(rag_tokens, state_tok)  # (B, T, 4), (B, T, 1)
         #loss
         loss = None
         l1 = None
@@ -491,7 +498,7 @@ class ActionModel(PreTrainedModel):
     @torch.no_grad()
     def predict(self, img, state):
         rag_tokens, state_tok = self.generate_latent_predict(img.to(device), state.to(device), return_tokens=True)
-        action_pred, _ = self.act_head(rag_tokens, state_tok)
+        action_pred, _, _ = self.act_head(rag_tokens, state_tok)
         return action_pred  # (B, T, 4)
 
 def data_collator(batch):

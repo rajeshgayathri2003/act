@@ -287,7 +287,7 @@ class TransformerDecoderLayer(nn.Module):
 
 class RAGActionTransformer(nn.Module):
     def __init__(self, transformer, rag_dim=64, state_dim=9, n_rag_tokens=3,
-                 action_dim=4, num_queries=20):
+                 action_dim=4, num_queries=20, codebook=None):
         super().__init__()
         self.transformer = transformer
         d = transformer.d_model
@@ -295,14 +295,20 @@ class RAGActionTransformer(nn.Module):
         self.state_proj = nn.Linear(state_dim, d)
         self.rag_pos    = nn.Embedding(n_rag_tokens + 1, d)   # 3 RAG tokens + 1 state token
         self.query_embed = nn.Embedding(num_queries, d)       # decoder action-step positions
-        self.action_head = nn.Linear(d, action_dim)
+        # a codebook (d -> action_dim, e.g. ragmani's TwoHotHead) predicts bin logits per action dimension and decodes them; without one, a linear head regresses the actions
+        self.codebook = codebook
+        self.action_head = nn.Linear(d, action_dim) if codebook is None else None
         self.is_pad_head = nn.Linear(d, 1)
 
     def forward(self, rag_tokens, state):
+        """Actions (B, T, action_dim), padding logits (B, T, 1), and with a codebook the bin logits (B, T, action_dim, bins) the actions were decoded from (None otherwise)."""
         # rag_tokens: (B, 3, 64), state: (B, 1, 9)
         src = torch.cat([self.rag_proj(rag_tokens), self.state_proj(state)], dim=1)  # (B, 4, d)
         hs = self.transformer(src, None, self.query_embed.weight, self.rag_pos.weight)[0]
-        return self.action_head(hs), self.is_pad_head(hs)
+        if self.codebook is None:
+            return self.action_head(hs), self.is_pad_head(hs), None
+        action, logits = self.codebook(hs)
+        return action, self.is_pad_head(hs), logits
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
