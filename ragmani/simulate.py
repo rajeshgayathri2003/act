@@ -98,6 +98,24 @@ def episodes(model, retriever, encoder, envs, seeds, max_steps=MAX_STEPS, execut
       succeeded[number] |= success & ~done[number]
       done[number] |= success | terminated.reshape(-1).cpu()
   return [[(recorded[number][index], bool(succeeded[number][index]), rewards[number][index]) for index in range(len(seeds[number]))] for number in range(len(envs))]
+    images = frames.render(env)
+    embeddings, qpos = encoder.embed(images).to(device), observation["agent"]["qpos"].to(device).float()
+    chunk, _, _, _ = model(embeddings, qpos, retriever)
+    chunk = chunk * model.action.std + model.action.mean  # back to the controller's units
+    chunks = [*chunks, (step, chunk)][-chunk.shape[1]:]  # only chunks that still cover this step
+    action = EXECUTIONS[execution](chunks, step)
+    observation, reward, terminated, _, info = env.step(action.to(env.device))  # the unwrapped env never truncates; max_steps does
+
+    for index in (~done).nonzero().flatten().tolist():
+      rewards[index].append(float(reward.reshape(-1)[index]))
+      if keep is not None and index not in keep: continue
+      recorded[index].append(frames.annotate(images[index], step=step, action=action[index]) if annotate else images[index])
+
+    success = info["success"].reshape(-1).cpu()
+    succeeded |= success & ~done
+    done |= success | terminated.reshape(-1).cpu()
+    if done.all(): break
+  return [(recorded[index], bool(succeeded[index]), rewards[index]) for index in range(len(seeds))]
 
 
 class Callback(TrainerCallback):

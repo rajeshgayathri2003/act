@@ -1,0 +1,83 @@
+# PushCube-v1, end-effector delta-position control, I-JEPA image embeddings.
+# Relative paths resolve against the repo root (act/).
+env_id: PushCube-v1
+
+paths:
+  traj: ../robot-manipulation/PushCube-v1/trajectory.state.pd_ee_delta_pos.cpu.h5
+  dataset: ../data/push_cube_jepa
+  cache: .cache/hf
+  run_dir: runs/push_cube
+
+wandb:
+  entity: ragmani
+  project: ragmani
+  mode: online                    # online, offline (upload later with `wandb sync`) or disabled
+
+encoder:
+  name: ijepa                     # key in models/encoders.py ENCODERS; siglip uses google/siglip-base-patch16-224
+  model_id: jmtzt/ijepa_vith16_1k
+  normalize: true
+  precision: float32              # or bfloat16, about 4x faster; encode and simulate both use it, so changing it means re-encoding
+
+encode:
+  batch_size: 32                  # frames per encoder forward pass
+  max_episodes: null              # null encodes every episode
+
+retrieval:
+  index: ivf                      # ivf searches with FAISS, approximate; exact compares against every row
+  nlist: null                     # clusters FAISS splits the rows into; null uses the square root of the row count
+  nprobe: 8                       # clusters searched per lookup; more is slower and finds more of the true nearest
+
+model:
+  name: rag_act
+  state_dim: 9
+  action_dim: 4
+  chunk: 20
+  image_layers: [512, 256, 128, 128, 128]   # hidden layer sizes taking the image embedding down to feature_size
+  state_layers: [32, 32, 32]
+  feature_size: 64                # image and state are each reduced to this many features
+  queries: 3                      # searches per step, made to point in different directions; each becomes one input to the ACT head
+  channel_hidden: 64
+  token_dim: 64
+  neighbours: 6                   # rows each search returns
+  keep: 3                         # of those, how many are kept: a random few for each row and search in training, the best at eval and simulate
+  d_model: 256
+  heads: 8
+  encoder_layers: 4
+  decoder_layers: 4
+  feedforward: 1024
+  dropout: 0.1
+  search_scores_in_attention: false   # true adds each row's search similarity to its attention weight
+  normalize: false                # true rescales state and action to mean 0 and std 1 using the training rows, as ACT does
+  action_head: regression         # codebook predicts each action dimension as logits over fixed bins and trains them by cross-entropy (DreamerV3 two-hot)
+  codebook:                       # used when action_head is codebook
+    bins: 65
+    low: -1.0                     # bin range, in the units the model predicts: raw actions, or standardized ones when normalize is true
+    high: 1.0
+    symlog: true                 # true spaces the bins evenly in symlog space, finer near zero
+
+# Values reproduce rag_model.py at 8b9a9e3; the comments name the alternative each switch offers.
+train:
+  epochs: 1500
+  batch_size: 512
+  lr: 1.0e-5                      # rag_model.py forces 1e-5 every step, so its plateau schedule never takes effect
+  lr_scheduler: constant          # any transformers lr_scheduler_type, e.g. cosine; reduce_lr_on_plateau uses plateau below
+  warmup_ratio: 0.0               # share of training over which the learning rate ramps from 0 to lr
+  max_grad_norm: 1.0              # gradients larger than this are scaled down (Trainer default, rag_model.py); 0 turns it off, as ACT
+  weight_decay: 0.0               # Trainer default, rag_model.py; ACT uses 1.0e-4
+  plateau: {factor: 0.1, patience: 5, threshold: 1.0e-3, min_lr: 1.0e-5}
+  eval_steps: 1000
+  save_epochs: 200                # a checkpoint every this many epochs, for resuming and simulating mid-run; best/ and final/ are always saved
+  save_limit: 3                   # checkpoints kept; older ones are deleted (rag_model.py kept 2)
+  log_steps: 100
+  resume: false                   # true continues from the latest checkpoint-* in the run folder and the same W&B run (a restarted pod, or a longer epochs); none found starts fresh
+  split: frame                    # eval rows: frame holds out random rows (rag_model.py), episode holds out whole demos
+  eval_fraction: 0.2
+  split_seed: 42
+  exclude_own_episode: false      # true stops the search returning rows from the row's own demo
+  pad_weight: 1.0                 # weight of the loss for predicting where the demo ended, relative to the action loss
+  dataloader_workers: 4
+  seed: 42                        # the transformers default rag_model.py ran with
+  simulate_epochs: 5              # every this many epochs, a sim check during training; 0 turns it off
+  simulate_episodes: 10           # layouts scored at each check for training_success_rate, which picks best_success; the video is one more, fixed layout
+  simulate_after: {checkpoints: [best_success, best, final], episodes: 0}   # after training, simulate these on this many fresh layouts; 0 skips it
