@@ -29,6 +29,7 @@ MAX_STEPS = 128   # the longest demo; test.py allowed 400
 SEED = 42         # picks the episodes' starting layouts; test.py used 1
 CHECK_SEED = 7    # picks the layouts scored during training; not SEED, so choosing best_success never sees the layouts simulate reports
 ANNOTATE = True   # step and action written on each video frame
+PANEL_PHASES = (0.2, 0.5, 0.8)  # where in its demo each of the neighbours panel's frames sits
 ENSEMBLE_DECAY = 0.01  # ACT's k in exp(-k * i): older chunks count slightly more
 
 
@@ -103,15 +104,16 @@ def episodes(model, retriever, encoder, envs, seeds, max_steps=MAX_STEPS, execut
 class Callback(TrainerCallback):
   """For the Trainer: every few epochs, a check under check/: the success rate over fixed layouts (kept as best_success when highest), their grid, and a video of one more fixed layout.
 
-  Each check also logs retrieval/neighbours: for one fixed held-out frame, the rows a query of its own embedding finds and the rows each search kept.
+  Each check also logs retrieval/neighbours: for an early, a middle and a late frame of one held-out demo, the frame and each query's best row.
   """
 
   def __init__(self, config, retriever, eval_rows, every, episodes):
     self.config, self.retriever, self.every = config, retriever, every
     episode = eval_rows["episode"][:].numpy()
-    truth_row = int(np.flatnonzero(episode == episode.min())[(episode == episode.min()).sum() // 2])  # the middle step of the first held-out episode
-    truth = eval_rows.with_format("torch", columns=["image_emb", "state", "episode", "step"])[truth_row:truth_row + 1]
-    self.truth = {key: value.to(retriever.rows["image_emb"].device) for key, value in truth.items()}
+    demo = np.random.default_rng(CHECK_SEED).choice(np.unique(episode))  # one held-out demo, the same at every check
+    steps = np.flatnonzero(episode == demo)  # its rows, in step order
+    current = eval_rows.with_format("torch", columns=["image_emb", "state", "episode", "step"])[[int(steps[int(phase * (len(steps) - 1))]) for phase in PANEL_PHASES]]
+    self.current = {key: value.to(retriever.rows["image_emb"].device) for key, value in current.items()}  # the frames the panel's queries are made from
     score = config.run_dir / "best_success" / "success_rate.json"
     self.highest = json.loads(score.read_text())["success_rate"] if config.train.resume and score.exists() else -1.0  # a resumed run keeps the rate best_success/ was saved at
     self.encoder = ENCODERS[config.encoder.name](config.encoder, retriever.rows["image_emb"].device)  # the encoder the dataset was built with
@@ -141,7 +143,7 @@ class Callback(TrainerCallback):
     wandb.log({
       **logs,
       **({"check/success_rate": float(np.mean(every))} if every else {}),  # over every scored episode, whichever its task
-      "retrieval/neighbours": wandb.Image(neighbours, caption=f"epoch {round(state.epoch)}: truth, then each search's kept rows"),
+      "retrieval/neighbours": wandb.Image(neighbours, caption=f"epoch {round(state.epoch)}: each current frame, then each query's best row"),
     })
 
   def log(self, task, epoch, recorded, success, others, scored):
@@ -160,21 +162,23 @@ class Callback(TrainerCallback):
 
   @torch.no_grad()
   def neighbours(self, model):
-    """One image: columns of the truth, the rows a query of its own embedding finds and the rows each search kept; row k holds each column's k-th nearest."""
-    keep, rows = self.config.model.n_keep, self.retriever.rows
-    _, _, idx = model(self.truth["image_emb"], self.truth["state"], self.retriever)  # (1, queries*keep), nearest first in eval mode
-    truth_idx = self.retriever.search(self.truth["image_emb"][:, None].float(), keep, self.truth["episode"]).flatten()  # the reference the retrieval scores call 1
-    columns = [("query", truth_idx)] + [(f"search {search + 1}", idx[0, search * keep:(search + 1) * keep]) for search in range(self.config.model.n_queries)]
+    """One image: a row per current frame, early to late in its demo, holding the frame and then each query's best row."""
+    rows = self.retriever.rows
+    _, _, idx = model(self.current["image_emb"], self.current["state"], self.retriever)  # (frames, queries*keep), each query's rows nearest first
+    best = idx[:, ::self.config.model.n_keep].tolist()  # (frames, queries): each query's nearest row
+    locate = lambda row: (int(rows["episode"][row]), int(rows["step"][row]))
+    current = [(int(episode), int(step)) for episode, step in zip(self.current["episode"], self.current["step"])]
+    locations = [location for frame, found in zip(current, best) for location in (frame, *map(locate, found))]
 
-    locations = [(int(self.truth["episode"]), int(self.truth["step"]))] + [(int(rows["episode"][row]), int(rows["step"][row])) for _, column in columns for row in column.tolist()]
     images = [None] * len(locations)
     for index, task in enumerate(self.config.tasks):  # each row renders in its own task's env, from its own demos
       mine = [number for number, (episode, _) in enumerate(locations) if data.split(episode)[0] == index]
       for number, image in zip(mine, frames.demo(self.envs[index], task.traj, [(data.split(locations[number][0])[1], locations[number][1]) for number in mine])): images[number] = image
     tiles = [frames.caption(image, f"ep {episode} s {step}") for image, (episode, step) in zip(images, locations)]
-    grid = [[tiles[0]] * keep] + [tiles[1 + number * keep:1 + (number + 1) * keep] for number in range(len(columns))]  # one list of keep tiles per column
-    headings = np.concatenate([frames.heading(label) for label in ["truth", *(label for label, _ in columns)]], axis=1)
-    return np.concatenate([headings, *(np.concatenate([column[rank] for column in grid], axis=1) for rank in range(keep))])
+
+    width = 1 + len(best[0])  # the current frame, then each query's best row
+    headings = np.concatenate([frames.heading(label) for label in ["current", *(f"search {query + 1}" for query in range(width - 1))]], axis=1)
+    return np.concatenate([headings, *(np.concatenate(tiles[row:row + width], axis=1) for row in range(0, len(tiles), width))])
 
 
 def main(arguments):
