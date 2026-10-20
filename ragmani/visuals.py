@@ -1,27 +1,31 @@
-"""Frames from the env, at its current state, any stored one or a demo's, and text written on a frame.
+"""Frames from the env (its current state, any stored one, or a demo's), text written on them, and mp4s of them, alone or tiled.
 
-Frames are (H, W, 3) uint8 arrays, so they feed video.write directly.
+Frames are (H, W, 3) uint8 arrays, so render's output feeds write directly.
 """
+import math
+from pathlib import Path
+
 import cv2
 import h5py
+import imageio
 import numpy as np
 
 from ragmani.data.trajectories import pick, read
 
 
-def render(env, state=None):
-  """Every parallel env's camera frame as (envs, H, W, 3), after setting state (e.g. a demo's episode.state(step)) when given.
+def render(env, camera, state=None):
+  """Every parallel env's frame from camera as (envs, H, W, 3), after setting state (e.g. a demo's episode.state(step)) when given.
 
   env is unwrapped and reset at least once, as set_state_dict needs.
   """
   if state is not None: env.set_state_dict(state)
-  images = env.render()
+  images = env.render_rgb_array(camera)
   images = images.cpu().numpy() if hasattr(images, "cpu") else np.asarray(images)
   return np.ascontiguousarray(images.reshape(-1, *images.shape[-3:])[..., :3], dtype=np.uint8)  # a batch axis always, no alpha
 
 
-def demo(env, path, rows):
-  """The camera frame of each demo (episode, step) in rows, rendered from the state path's h5 recorded there, as many per render as env has copies."""
+def demo(env, path, rows, camera):
+  """The frame of each demo (episode, step) in rows, rendered from the state path's h5 recorded there, as many per render as env has copies."""
   with h5py.File(path, "r") as file:
     episodes = {episode: read(file[f"traj_{episode}"]["env_states"]) for episode in {episode for episode, _ in rows}}
   states = [pick(episodes[episode], step) for episode, step in rows]
@@ -29,7 +33,7 @@ def demo(env, path, rows):
   for start in range(0, len(states), env.num_envs):
     chunk = states[start:start + env.num_envs]
     chunk += [chunk[-1]] * (env.num_envs - len(chunk))  # every copy needs a state; the extras are dropped
-    images.extend(render(env, stack(chunk))[:len(states) - start])
+    images.extend(render(env, camera, stack(chunk))[:len(states) - start])
   return images
 
 
@@ -63,3 +67,27 @@ def annotate(frame, **text):
     cv2.putText(frame, words, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)  # dark outline so the text reads on any background
     cv2.putText(frame, words, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
   return frame
+
+
+def write(path, frames, fps=20):
+  """Frames to an mp4 at path, creating its folder; the settings test.py used."""
+  Path(path).parent.mkdir(parents=True, exist_ok=True)
+  imageio.mimwrite(path, frames, fps=fps, quality=8)
+
+
+def grid(episodes, tile=256, successes=None):
+  """Episodes (lists of frames) tiled into one sequence of frames; each tile is tile pixels square and an ended episode holds its last frame.
+
+  With successes, one bool per episode, each tile gets a green border for a success and a red one for a failure.
+  """
+  columns = math.ceil(math.sqrt(len(episodes)))
+  rows = math.ceil(len(episodes) / columns)
+  length = max(len(frames) for frames in episodes)
+  blank = np.zeros((tile, tile, 3), np.uint8)
+  tiled = []
+  for step in range(length):
+    tiles = [cv2.resize(frames[min(step, len(frames) - 1)], (tile, tile), interpolation=cv2.INTER_AREA) for frames in episodes]
+    if successes is not None: tiles = [cv2.rectangle(image, (0, 0), (tile - 1, tile - 1), (0, 200, 0) if succeeded else (220, 0, 0), 4) for image, succeeded in zip(tiles, successes)]
+    tiles += [blank] * (rows * columns - len(tiles))
+    tiled.append(np.concatenate([np.concatenate(tiles[row * columns:(row + 1) * columns], axis=1) for row in range(rows)], axis=0))
+  return tiled

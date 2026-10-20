@@ -26,7 +26,7 @@ def rows(episode, env, encoder, chunk, batch_size):
   for step in range(steps + 1):  # T+1 states, so the last action's next_state is the recorded final state
     env.set_state_dict(episode.state(step))
     qpos.append(env.get_obs()["agent"]["qpos"][0].cpu().numpy())
-    if step < steps: frames.append(env.render()[0].cpu().numpy())
+    if step < steps: frames.append(env.render_rgb_array(encoder.config.camera)[0].cpu().numpy())
 
   embeddings = torch.cat([encoder.embed(frames[start:start + batch_size]) for start in range(0, steps, batch_size)]).numpy()
 

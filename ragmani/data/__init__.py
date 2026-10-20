@@ -1,9 +1,7 @@
-from ragmani.data.dataset import TASK_STRIDE, combine, load, split, statistics
+from ragmani.data.dataset import SPLITS, combine, statistics
 
 __all__ = [
-  "TASK_STRIDE",
+  "SPLITS",
   "combine",
-  "load",
-  "split",
   "statistics",
 ]

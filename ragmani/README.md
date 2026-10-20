@@ -42,9 +42,10 @@ Image and state MLPs encode the frame and `QueryMLP` turns it into orthogonal qu
 | Path | What |
 |---|---|
 | `config.py` | settings, presets, run loader |
-| `data/` | demos, encoding, datasets, retrieval, splits |
+| `data/` | demos, encoding, datasets and their splits, retrieval |
 | `models/` | image encoders and `RagAct` |
-| `train.py`, `callbacks.py` | training and its bookkeeping |
+| `train.py` | training and its bookkeeping |
+| `wandb_metrics.py` | the W&B run, what each metric means, and the W&B Trainer callbacks |
 | `simulate.py` | closed-loop simulation |
 | `launch.py`, `nautilus.sh` | queue a run as a Nautilus Job, and the Job's command |
-| `visuals/` | frames and video |
+| `visuals.py` | frames, captions and video |

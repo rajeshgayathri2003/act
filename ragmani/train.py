@@ -11,21 +11,20 @@ from collections import defaultdict
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import Trainer, TrainingArguments
+from safetensors.torch import save_model
+from transformers import Trainer, TrainerCallback, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
 
 import wandb
-from ragmani import data, simulate
-from ragmani.callbacks import Best, WandbAlerts, WandbStop
-from ragmani.config import cli, to_dict
+from ragmani import data, simulate, wandb_metrics
+from ragmani.config import Config, cli, to_dict
 from ragmani.data.retriever import Retriever
-from ragmani.data.splits import SPLITS
 from ragmani.models import RagAct
 
-COLUMNS = ["image_emb", "state", "next_state", "action", "is_pad", "episode"]
+COLUMNS = ["image_emb", "state", "next_state", "action", "is_pad", "episode", "task"]
 
 
-def retrieval_metrics(idx, inputs, retriever, action, exclude):
+def retrieval_metrics(idx, inputs, retriever, action, exclude, tasks):
   """How useful and how varied the retrieved rows are: the two scores are 1 for the rows the current frame's own image embedding finds and 0 for no help, and norm_entropy is how many different rows fill the slots."""
   truth_image, mem_image = inputs["image_emb"].float(), retriever.rows["image_emb"].float()
   image_idx = retriever.search(truth_image[:, None], idx.shape[1], exclude).flatten(1)  # the rows a search with the current frame's own image embedding returns: the yardstick the queries' rows are scored against
@@ -35,11 +34,32 @@ def retrieval_metrics(idx, inputs, retriever, action, exclude):
   mean_action_distance, avg_cos_sim = truth_action.abs().mean(), (truth_image @ mem_image.mean(dim=0)).mean()  # the mean action is 0 once standardized
   row_share = idx.flatten().bincount().float()
   row_share = row_share[row_share > 0] / idx.numel()  # each retrieved row's share of all slots
+  task_match = (retriever.rows["task"][idx] == inputs["task"][:, None]).float().mean(-1)  # per frame, the share of its rows from its own task
+  task_match = [task_match[inputs["task"] == index].mean() for index in range(len(tasks))]  # nan for a task missing from the batch
   return {
+    **({"retrieval/task_match": torch.stack(task_match).nanmean().item(), **{wandb_metrics.key("retrieval", tasks, task, "task_match"): value.item() for task, value in zip(tasks, task_match)}} if len(tasks) > 1 else {}),  # the combined counts each task equally
     "retrieval/action_score": ((mean_action_distance - action_distance(idx)) / (mean_action_distance - action_distance(image_idx))).item(),  # 0 is no better than the mean action
     "retrieval/cos_sim_score": ((cos_sim(idx) - avg_cos_sim) / (cos_sim(image_idx) - avg_cos_sim)).item(),  # 0 is no closer than an average row
     "retrieval/norm_entropy": (-(row_share * row_share.log()).sum() / math.log(idx.numel())).item(),  # Shannon entropy of which row fills each slot over its maximum: 1 all different, 0 one row
   }
+
+
+class Best(TrainerCallback):
+  """Keeps <run_dir>/best as the model at its lowest eval loss so far, with its step and epoch."""
+
+  def __init__(self, run_dir):
+    self.directory = run_dir / "best"
+    self.lowest = math.inf
+
+  def on_train_begin(self, args, state, control, **kwargs):
+    if state.best_metric is not None: self.lowest = state.best_metric  # a resumed run's state carries its best eval loss, so best/ is not overwritten by a worse model
+
+  def on_evaluate(self, args, state, control, metrics=None, model=None, **kwargs):
+    if metrics["eval_loss"] >= self.lowest: return
+    self.lowest = metrics["eval_loss"]
+    self.directory.mkdir(parents=True, exist_ok=True)
+    save_model(model, str(self.directory / "model.safetensors"))
+    state.save_to_json(str(self.directory / "trainer_state.json"))
 
 
 def collate(rows):
@@ -49,10 +69,10 @@ def collate(rows):
 class RagActTrainer(Trainer):
   """Runs RagAct with the retriever: the loss is the action L1 on the demo's real steps plus the end-of-demo BCE."""
 
-  def __init__(self, *args, retriever, pad_weight, **kwargs):
+  def __init__(self, *args, retriever, c: Config, **kwargs):
     super().__init__(*args, **kwargs)
     self.retriever = retriever
-    self.pad_weight = pad_weight
+    self.c = c
 
   def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
     pred_action, pred_pad, idx = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=inputs["episode"]) # the search skips rows from its demo
@@ -72,11 +92,11 @@ class RagActTrainer(Trainer):
       wandb.log({
         "train/global_step": self.state.global_step,
         **{f"train/{name}": value.item() for name, value in losses.items()},
-        **retrieval_metrics(idx, inputs, self.retriever, model.action, exclude=inputs["episode"]),
+        **retrieval_metrics(idx, inputs, self.retriever, model.action, inputs["episode"], self.c.tasks),
         **{name: value.item() for name, value in model.diagnostics.items()},
       })
 
-    loss = losses["action_l1"] + self.pad_weight * losses["pad_bce"]
+    loss = losses["action_l1"] + self.c.train.pad_weight * losses["pad_bce"]
     return (loss, {"action": pred_action, "is_pad": pred_pad}) if return_outputs else loss
 
   def evaluate(self, *args, **kwargs):
@@ -97,7 +117,7 @@ def main(c):
 
   # train and eval rows
   dataset = data.combine(c.tasks).with_format("torch", columns=COLUMNS)
-  is_held_out = SPLITS[c.train.split](dataset["episode"][:].numpy(), c.train.eval_fraction, c.train.seed)
+  is_held_out = data.SPLITS[c.train.split](dataset["episode"][:].numpy(), c.train.eval_fraction, c.train.seed)
   train_rows = dataset.select(np.flatnonzero(~is_held_out))
   eval_rows = dataset.select(np.flatnonzero(is_held_out))
   if not len(eval_rows): raise ValueError(f"train.eval_fraction={c.train.eval_fraction} holds out no rows of this dataset under the {c.train.split} split")
@@ -145,10 +165,10 @@ def main(c):
     seed=c.train.seed,
   )
 
-  stop = WandbStop()
+  stop = wandb_metrics.Stop()
   callbacks = [Best(c.run_dir), stop]
-  alerts = {"Gradient norm exploded": WandbAlerts.warn_gradient_exploded(c.wandb.alert_grad_norm)} if c.wandb.alert_grad_norm else {}
-  if alerts: callbacks.append(WandbAlerts(alerts))
+  alerts = {"Gradient norm exploded": wandb_metrics.Alerts.warn_gradient_exploded(c.wandb.alert_grad_norm)} if c.wandb.alert_grad_norm else {}
+  if alerts: callbacks.append(wandb_metrics.Alerts(alerts))
   if c.train.simulate_epochs: callbacks.append(simulate.Callback(c, retriever, eval_rows, c.train.simulate_epochs, c.train.simulate_episodes))
   trainer = RagActTrainer(
     model=model,
@@ -158,35 +178,16 @@ def main(c):
     eval_dataset=eval_rows,
     callbacks=callbacks,
     retriever=retriever,
-    pad_weight=c.train.pad_weight,
+    c=c,
   )
 
   # the run folder; simulate rebuilds the model from the c W&B stores, whatever the presets say later
   run_dir = c.run_dir
   run_dir.mkdir(parents=True, exist_ok=True)
 
-  # resuming picks up the latest checkpoint and the same W&B run; None starts fresh
+  # resuming picks up the latest checkpoint and the same W&B run
   latest = get_last_checkpoint(run_dir) if c.train.resume else None  # resume_from_checkpoint=True would raise
-  wandb_id = run_dir / "wandb_id"
-  run_id = wandb_id.read_text().strip() if c.train.resume and wandb_id.exists() else None  # None lets W&B or a sweep agent choose
-
-  rows = {"train": len(train_rows), "eval": len(eval_rows)}
-  with wandb.init(
-    id=run_id,
-    entity=c.wandb.entity,
-    project=c.wandb.project,
-    group=c.wandb.group,
-    mode=c.wandb.mode,
-    dir=run_dir.parent,  # every run under one runs/wandb, so `wandb leet runs/wandb` lists them together
-    name=run_dir.name,
-    config={**to_dict(c), "rows": rows},
-    resume="allow",
-    settings=wandb.Settings(stop_fn=stop.request),  # the UI's stop ends training instead of interrupting it
-  ) as run:
-    wandb_id.write_text(run.id)  # simulate reattaches to this run
-    run.define_metric("eval/loss", summary="min")  # the summary keeps each run's best, so runs sort and filter by it
-    run.define_metric("check/success_rate", summary="max")
-
+  with wandb_metrics.start(c, run_dir, c.train.resume, config={**to_dict(c), "rows": {"train": len(train_rows), "eval": len(eval_rows)}}, stop=stop):
     trainer.train(resume_from_checkpoint=latest)  # report_to="wandb" logs into the open run
     trainer.save_model(str(run_dir / "final"))
     trainer.state.save_to_json(str(run_dir / "final" / "trainer_state.json"))  # step and epoch, as every checkpoint-* has them

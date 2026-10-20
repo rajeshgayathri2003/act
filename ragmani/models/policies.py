@@ -72,7 +72,7 @@ class ActionHead(nn.Module):
     self.source_pos = nn.Embedding(c.n_queries + 1, c.d_model)  # one position per source token: the query tokens and the frame
     self.action_queries = nn.Embedding(c.chunk_len, c.d_model)  # one vector per step -> decoder maps to each action
 
-    self.transformer = (nn.Transformer(
+    self.transformer = (Transformer(
         d_model=c.d_model, nhead=c.n_heads, num_encoder_layers=c.encoder_layers,
         num_decoder_layers=c.decoder_layers, dim_feedforward=c.feedforward,
         dropout=c.dropout, batch_first=True))

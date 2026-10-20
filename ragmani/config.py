@@ -39,12 +39,16 @@ class TaskConfig:
     self.traj = (DATA_DIR / self.traj).resolve()
     self.dataset = (DATA_DIR / self.dataset).resolve()
 
+  @property
+  def name(self): return self.env_id.replace("-", "_")  # W&B metric names allow no hyphens
+
 
 @dataclass
 class EncoderConfig:
   name: Literal["ijepa", "siglip"] = "ijepa"  # key in models/encoders.py ENCODERS, which picks the weights too
   normalize: bool = True
   precision: Literal["float32", "bfloat16"] = "float32"  # must match the dataset's
+  camera: Literal["render_camera"] = "render_camera"  # the env's render camera the model sees; must match the dataset's
 
 
 @dataclass
@@ -162,7 +166,7 @@ PUSH_CUBE = TaskConfig("PushCube-v1", Path("PushCube-v1/trajectory.state.pd_ee_d
 PICK_CUBE = TaskConfig("PickCube-v1", Path("PickCube-v1/trajectory.state.pd_ee_delta_pos.cpu.h5"), Path("pick_cube_jepa"))  # the motion-planning demos converted to pd_ee_delta_pos
 
 
-PUSH_CUBE_TRAIN = TrainConfig(
+TRAIN = TrainConfig(
   lr=3.0e-5,
   lr_scheduler=SchedulerType.CONSTANT,
   warmup_ratio=0.0,  # the constant schedule takes no warmup
@@ -175,8 +179,8 @@ PUSH_CUBE_TRAIN = TrainConfig(
 
 
 PRESETS = {
-  "push_cube": ("PushCube-v1, end-effector delta-position control, I-JEPA image embeddings, constant lr 3e-5", Config(train=PUSH_CUBE_TRAIN)),
-  "push_pick_cube": ("PushCube-v1 and PickCube-v1 in one model: both tasks' demos fill one memory, and simulate shares its episodes between them", Config(name="push_pick_cube", tasks=[PUSH_CUBE, PICK_CUBE], run_dir=Path("runs/push_pick_cube"))),
+  "push_cube": ("PushCube-v1, end-effector delta-position control, I-JEPA image embeddings, constant lr 3e-5", Config(train=TRAIN)),
+  "push_pick_cube": ("PushCube-v1 and PickCube-v1 in one model: both tasks' demos fill one memory, and simulate shares its episodes between them", Config(name="push_pick_cube", tasks=[PUSH_CUBE, PICK_CUBE], train=TRAIN, run_dir=Path("runs/push_pick_cube"))),
 }
 
 

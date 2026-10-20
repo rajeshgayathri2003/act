@@ -17,12 +17,13 @@ import wandb
 from safetensors.torch import save_model
 from transformers import TrainerCallback
 
-from ragmani import data
+from ragmani import data, wandb_metrics
 from ragmani.config import cli, load_run
+from ragmani.wandb_metrics import key
 from ragmani.data.retriever import Retriever
 from ragmani.data.trajectories import Trajectories
 from ragmani.models import ENCODERS, RagAct
-from ragmani.visuals import frames, video
+from ragmani import visuals
 
 EPISODES = 20
 MAX_STEPS = 128   # the longest demo; test.py allowed 400
@@ -56,11 +57,6 @@ def environment(task, count=1):
   return gym.make(task.env_id, num_envs=count, sim_backend="physx_cuda" if count > 1 else "auto", obs_mode="state_dict", control_mode=Trajectories(task.traj).control_mode, render_mode="rgb_array").unwrapped
 
 
-def key(section, tasks, task, name):
-  """A W&B key under section (check or sim), with the task's env_id between when the run has several tasks."""
-  return f"{section}/{name}" if len(tasks) == 1 else f"{section}/{task.env_id}/{name}"
-
-
 def share(count, tasks, seed):
   """The task of each of count episodes: an even split over the tasks, shuffled, so any number of tasks costs the same and each gets some."""
   return np.random.default_rng(seed).permutation(np.arange(count) % tasks).tolist()
@@ -80,7 +76,7 @@ def episodes(model, retriever, encoder, envs, seeds, max_steps=MAX_STEPS, execut
   for step in range(max_steps):
     active = [number for number in range(len(envs)) if not done[number].all()]
     if not active: break
-    images = [frames.render(envs[number]) for number in active]
+    images = [visuals.render(envs[number], encoder.config.camera) for number in active]
     embeddings = encoder.embed(np.concatenate(images)).to(device)
     qpos = torch.cat([observations[number]["agent"]["qpos"].to(device).float() for number in active])
     chunk, pad_logit, _ = model(embeddings, qpos, retriever)
@@ -94,7 +90,7 @@ def episodes(model, retriever, encoder, envs, seeds, max_steps=MAX_STEPS, execut
       observations[number], reward, terminated, _, info = envs[number].step(action.to(envs[number].device))  # the unwrapped env never truncates; max_steps does
       for index in (~done[number]).nonzero().flatten().tolist():
         rewards[number][index].append(float(reward.reshape(-1)[index]))
-        recorded[number][index].append(frames.annotate(image[index], step=step, action=action[index]) if annotate else image[index])
+        recorded[number][index].append(visuals.annotate(image[index], step=step, action=action[index]) if annotate else image[index])
       success = info["success"].reshape(-1).cpu()
       succeeded[number] |= success & ~done[number]
       done[number] |= success | terminated.reshape(-1).cpu()
@@ -112,7 +108,7 @@ class Callback(TrainerCallback):
     episode = eval_rows["episode"][:].numpy()
     demo = np.random.default_rng(CHECK_SEED).choice(np.unique(episode))  # one held-out demo, the same at every check
     steps = np.flatnonzero(episode == demo)  # its rows, in step order
-    current = eval_rows.with_format("torch", columns=["image_emb", "state", "episode", "step"])[[int(steps[int(phase * (len(steps) - 1))]) for phase in PANEL_PHASES]]
+    current = eval_rows.with_format("torch", columns=["image_emb", "state", "task", "demo", "step"])[[int(steps[int(phase * (len(steps) - 1))]) for phase in PANEL_PHASES]]
     self.current = {key: value.to(retriever.rows["image_emb"].device) for key, value in current.items()}  # the frames the panel's queries are made from
     score = config.run_dir / "best_success" / "success_rate.json"
     self.highest = json.loads(score.read_text())["success_rate"] if config.train.resume and score.exists() else -1.0  # a resumed run keeps the rate best_success/ was saved at
@@ -147,12 +143,12 @@ class Callback(TrainerCallback):
     })
 
   def log(self, task, epoch, recorded, success, others, scored):
-    """One task's check: its videos on disk and its W&B entries, under check/<env_id>/ when the run has several tasks."""
+    """One task's check: its videos on disk and its W&B entries."""
     folder = "training" if len(self.config.tasks) == 1 else f"training/{task.env_id}"
     path = self.config.run_dir / "simulate" / folder / f"epoch_{epoch:04d}_{'success' if success else 'fail'}.mp4"
-    video.write(path, recorded)
+    visuals.write(path, recorded)
     grid_path = path.with_name(f"epoch_{epoch:04d}_grid.mp4")
-    video.write(grid_path, video.grid([frames for frames, _, _ in others], tile=160, successes=scored))  # every scored layout, bordered green or red
+    visuals.write(grid_path, visuals.grid([frames for frames, _, _ in others], tile=160, successes=scored))  # every scored layout, bordered green or red
     tasks = self.config.tasks
     return {
       **({key("check", tasks, task, "success_rate"): float(np.mean(scored))} if scored and len(tasks) > 1 else {}),
@@ -166,18 +162,17 @@ class Callback(TrainerCallback):
     rows = self.retriever.rows
     _, _, idx = model(self.current["image_emb"], self.current["state"], self.retriever)  # (frames, queries*keep), each query's rows nearest first
     best = idx[:, ::self.config.model.n_keep].tolist()  # (frames, queries): each query's nearest row
-    locate = lambda row: (int(rows["episode"][row]), int(rows["step"][row]))
-    current = [(int(episode), int(step)) for episode, step in zip(self.current["episode"], self.current["step"])]
-    locations = [location for frame, found in zip(current, best) for location in (frame, *map(locate, found))]
+    locate = lambda source, row: (int(source["task"][row]), int(source["demo"][row]), int(source["step"][row]))
+    locations = [location for frame, found in enumerate(best) for location in (locate(self.current, frame), *(locate(rows, row) for row in found))]
 
     images = [None] * len(locations)
     for index, task in enumerate(self.config.tasks):  # each row renders in its own task's env, from its own demos
-      mine = [number for number, (episode, _) in enumerate(locations) if data.split(episode)[0] == index]
-      for number, image in zip(mine, frames.demo(self.envs[index], task.traj, [(data.split(locations[number][0])[1], locations[number][1]) for number in mine])): images[number] = image
-    tiles = [frames.caption(image, f"ep {episode} s {step}") for image, (episode, step) in zip(images, locations)]
+      mine = [number for number, location in enumerate(locations) if location[0] == index]
+      for number, image in zip(mine, visuals.demo(self.envs[index], task.traj, [locations[number][1:] for number in mine], self.config.encoder.camera)): images[number] = image
+    tiles = [visuals.caption(image, f"ep {demo} s {step}") for image, (_, demo, step) in zip(images, locations)]
 
     width = 1 + len(best[0])  # the current frame, then each query's best row
-    headings = np.concatenate([frames.heading(label) for label in ["current", *(f"search {query + 1}" for query in range(width - 1))]], axis=1)
+    headings = np.concatenate([visuals.heading(label) for label in ["current", *(f"search {query + 1}" for query in range(width - 1))]], axis=1)
     return np.concatenate([headings, *(np.concatenate(tiles[row:row + width], axis=1) for row in range(0, len(tiles), width))])
 
 
@@ -209,12 +204,12 @@ def main(arguments):
     folder = output if len(config.tasks) == 1 else output / task.env_id
     results, recordings = [], []
     for index, (seed, (recorded, success, rewards)) in enumerate(zip(task_seeds, task_outcomes)):
-      video.write(folder / f"episode_{index:02d}_seed_{seed}_{'success' if success else 'fail'}.mp4", recorded)
+      visuals.write(folder / f"episode_{index:02d}_seed_{seed}_{'success' if success else 'fail'}.mp4", recorded)
       recordings.append(recorded)
       results.append({"episode": index, "seed": seed, "success": success, "steps": len(recorded), "mean_reward": float(np.mean(rewards))})
       print(f"{task.env_id} episode {index}: Total Reward {results[-1]['mean_reward']:.4f} Success {success} Timestep {len(recorded)}")
 
-    video.write(folder / "grid.mp4", video.grid(recordings, successes=[result["success"] for result in results]))
+    visuals.write(folder / "grid.mp4", visuals.grid(recordings, successes=[result["success"] for result in results]))
     successes = sum(result["success"] for result in results)
     every += [result["success"] for result in results]
     (folder / "summary.json").write_text(json.dumps({"checkpoint": str(checkpoint), "env_id": task.env_id, "step": trained["train/global_step"], "epoch": trained["train/epoch"], "execution": arguments.execution, "success_rate": successes / len(results), "episodes": results}, indent=2))
@@ -226,9 +221,7 @@ def main(arguments):
     }
   print(f"Success rate: {sum(every)}/{len(every)} over {len(runs)} task(s) -> {output}")
 
-  with wandb.init(entity=config.wandb.entity, project=config.wandb.project, group=config.wandb.group, mode=config.wandb.mode, dir=run_dir.parent, name=run_dir.name, id=id_file.read_text().strip() if id_file.exists() else None, resume="allow") as run:
-    id_file.write_text(run.id)
-    run.define_metric("sim/success_rate", summary="max")  # the run's best checkpoint score, for sorting runs
+  with wandb_metrics.start(config, run_dir, attach=True) as run:
     run.log({
       **{name: value for name, value in trained.items() if value is not None},  # absent when the checkpoint has no trainer_state.json
       "sim/success_rate": float(np.mean(every)),  # over every episode, whichever its task

@@ -5,15 +5,15 @@ Choosing which neighbours to use (subsampling, how many) belongs to the caller, 
 """
 import torch
 
-COLUMNS = ["image_emb", "state", "action", "next_state", "episode", "step"]  # episode and step locate a row's demo state, to render it
-
 
 class Retriever:
   """Holds the encoded rows on one device and finds the nearest by inner product of image embeddings."""
 
+  COLUMNS = ("image_emb", "state", "action", "next_state", "episode", "task", "demo", "step")  # task, demo and step locate a row to render it
+
   def __init__(self, dataset, config, device="cpu"):
     self.config = config
-    rows = dataset.with_format("torch", columns=COLUMNS)[:]
+    rows = dataset.with_format("torch", columns=list(self.COLUMNS))[:]
     self.longest_episode = int(torch.bincount(rows["episode"]).max())  # IVF over-fetches this many so exclusion still leaves k
     self.rows = {key: value.to(device) for key, value in rows.items()}
     self.on_gpu = False  # build sets it once FAISS moves the index to the GPU
