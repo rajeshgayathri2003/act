@@ -75,6 +75,9 @@ class RagActTrainer(Trainer):
     self.c = c
 
   def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    if model.training:
+      progress = self.state.global_step / max(self.state.max_steps, 1)  # 0 at the start of the run, 1 at the end
+      model.combined_mask_rate.fill_(min(max((self.c.train.combined_warmup_by - progress) / self.c.train.combined_warmup, 0), 1) if self.c.train.combined_warmup else float(progress < self.c.train.combined_start_at))
     pred_action, pred_pad, idx = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=inputs["episode"]) # the search skips rows from its demo
 
     target_action = model.action.standardize(inputs["action"])
