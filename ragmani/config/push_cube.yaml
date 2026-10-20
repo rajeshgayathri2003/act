@@ -49,6 +49,12 @@ model:
   dropout: 0.1
   search_scores_in_attention: false   # true adds each row's search similarity to its attention weight
   normalize: false                # true rescales state and action to mean 0 and std 1 using the training rows, as ACT does
+  action_head: regression         # codebook predicts each action dimension as logits over fixed bins and trains them by cross-entropy (DreamerV3 two-hot)
+  codebook:                       # used when action_head is codebook
+    bins: 65
+    low: -1.0                     # bin range, in the units the model predicts: raw actions, or standardized ones when normalize is true
+    high: 1.0
+    symlog: true                 # true spaces the bins evenly in symlog space, finer near zero
 
 # Values reproduce rag_model.py at 8b9a9e3; the comments name the alternative each switch offers.
 train:

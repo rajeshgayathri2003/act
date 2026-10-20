@@ -10,6 +10,7 @@ from safetensors.torch import load_file
 from torch import nn
 
 from detr.models.transformer import RAGActionTransformer, Transformer
+from ragmani.models.codebook import TwoHotHead
 
 
 class CopyGrad(torch.autograd.Function):
@@ -85,10 +86,23 @@ class RagAct(nn.Module):
       n_rag_tokens=config.queries,
       action_dim=config.action_dim,
       num_queries=config.chunk,
+      codebook=self.action_codebook(config),
     )
 
     self.state = StatDict(config.state_dim)
     self.action = StatDict(config.action_dim)
+
+  @staticmethod
+  def action_codebook(config):
+    """With the codebook head, the decoder latent straight to logits over fixed bins per action dimension, decoded to their expected value (DreamerV3)."""
+    if config.action_head != "codebook": return None
+    codebook = config.codebook
+    return TwoHotHead(config.d_model, config.action_dim, codebook.bins, codebook.low, codebook.high, symlog=codebook.symlog)
+
+  @property
+  def codebook(self):
+    """The head's TwoHotHead, or None with the regression head."""
+    return self.head.codebook
 
   @classmethod
   def load(cls, checkpoint_dir, config, image_dim):
@@ -98,7 +112,8 @@ class RagAct(nn.Module):
     return model
 
   def forward(self, image, state, retriever, exclude=None, truth=None, add_truth=None):
-    """Standardized action chunk (B, chunk, action_dim), padding logits (B, chunk) and the retrieved row indices (B, queries*keep).
+    """Standardized action chunk (B, chunk, action_dim), padding logits (B, chunk), the retrieved row indices (B, queries*keep)
+    and, with the codebook head, the bin logits (B, chunk, action_dim, bins) the chunk was decoded from (None otherwise).
 
     image is (B, image_dim) and state (B, state_dim), both raw. exclude is (B,) episode ids the search skips. truth is each
     row's own raw (action chunk, next_state), added as one more key and value for the rows where add_truth (B,) is True.
@@ -112,8 +127,8 @@ class RagAct(nn.Module):
 
     mem, idx, q_fetch = self.retrieve(q, retriever, exclude)
     z = self.generate_latent(image, state, h_obs, q_stack, q, q_fetch, mem, truth, add_truth)
-    action, is_pad = self.head(z, state[:, None])
-    return action, is_pad.squeeze(-1), idx
+    action, is_pad, logits = self.head(z, state[:, None])
+    return action, is_pad.squeeze(-1), idx, logits
 
   def retrieve(self, q, retriever, exclude):
     """The kept memory rows mem, their row indices idx (B, queries*keep), and the search vectors q_fetch (B, queries, image_dim)."""

@@ -62,7 +62,7 @@ def episodes(model, retriever, encoder, env, seeds, max_steps=MAX_STEPS, executi
   for step in range(max_steps):
     images = frames.render(env)
     embeddings, qpos = encoder.embed(images).to(device), observation["agent"]["qpos"].to(device).float()
-    chunk, _, _ = model(embeddings, qpos, retriever)
+    chunk, _, _, _ = model(embeddings, qpos, retriever)
     chunk = chunk * model.action.std + model.action.mean  # back to the controller's units
     chunks = [*chunks, (step, chunk)][-chunk.shape[1]:]  # only chunks that still cover this step
     action = EXECUTIONS[execution](chunks, step)

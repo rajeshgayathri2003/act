@@ -73,15 +73,17 @@ class RagActTrainer(Trainer):
       add_truth = torch.rand(len(inputs["state"]), device=inputs["state"].device) < 1 - progress  # each row on its own draw
 
     exclude = inputs["episode"] if self.exclude_own_episode else None
-    pred_action, pred_pad, idx = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=exclude, truth=truth, add_truth=add_truth)
+    pred_action, pred_pad, idx, logits = model(inputs["image_emb"], inputs["state"], self.retriever, exclude=exclude, truth=truth, add_truth=add_truth)
 
     target_action = (inputs["action"] - model.action.mean) / model.action.std
     real_mask = (~inputs["is_pad"]).unsqueeze(-1).float()  # 1 on chunk steps before the demo's end
+    real_values = (real_mask.sum() * pred_action.shape[-1]).clamp(min=1)
     error = F.l1_loss(pred_action, target_action, reduction="none") * real_mask
     losses = {
-      "action_l1": error.sum() / (real_mask.sum() * pred_action.shape[-1]).clamp(min=1),  # mean over real steps only
+      "action_l1": error.sum() / real_values,  # mean over real steps only
       "pad_bce": F.binary_cross_entropy_with_logits(pred_pad, inputs["is_pad"].float()),
     }
+    if logits is not None: losses["action_ce"] = (model.codebook.loss(logits, target_action) * real_mask).sum() / real_values
 
     if not model.training:
       self.eval_rows += len(inputs["state"])
@@ -89,7 +91,8 @@ class RagActTrainer(Trainer):
     elif self.state.global_step % self.args.logging_steps == 0:
       wandb.log({"train/global_step": self.state.global_step, **{f"train/{name}": value.item() for name, value in losses.items()}, **retrieval_metrics(idx, inputs, self.retriever)})
 
-    loss = losses["action_l1"] + self.pad_weight * losses["pad_bce"]
+    action_loss = "action_ce" if logits is not None and model.training else "action_l1"  # eval_loss stays L1, so best/ and runs with either head compare
+    loss = losses[action_loss] + self.pad_weight * losses["pad_bce"]
     return (loss, {"action": pred_action, "is_pad": pred_pad}) if return_outputs else loss
 
   def evaluate(self, *args, **kwargs):
@@ -139,7 +142,7 @@ def main(name, overrides):
     learning_rate=config.train.lr,
     lr_scheduler_type=config.train.lr_scheduler,
     lr_scheduler_kwargs=dict(config.train.plateau) if config.train.lr_scheduler == "reduce_lr_on_plateau" else {},
-    warmup_ratio=config.train.warmup_ratio,
+    warmup_steps=float(config.train.warmup_ratio),  # transformers v5 dropped warmup_ratio; a float in [0, 1) is read as a ratio
     max_grad_norm=config.train.max_grad_norm,
     weight_decay=config.train.weight_decay,
     eval_strategy="steps",
