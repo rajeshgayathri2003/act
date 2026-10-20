@@ -26,7 +26,6 @@ Comparisons to show a change actually improves success in simulate, not just eva
 
 - Temporal ensembling against executing only the first action (`simulate --execution first`), once a model succeeds often enough for the difference to show.
 - Generalize past PushCube to other ManiSkill tasks (pulling, opening) once one task works, with more simulate layouts then.
-- tyro as the config tool: typed dataclasses per class, experiments as Python presets with `--help`. Not worth it while the yaml plus `section.key=value` overrides stay small; revisit when config mistakes cost runs or presets multiply.
 - The model sees ManiSkill's 512x512 `render_camera`, which shows objects hidden from observations (PickCube's goal). Move to the 128x128 `base_camera` its baselines use, at some point: it is a sensor camera, so it needs `render_sensors` or the obs rather than `render_rgb_array`, re-encoding every dataset, and PickCube's `goal_pos` in the state.
 - Separate key encoders against the shared ones (rag_model.py built unused `_value` encoders).
 - SigLIP and other encoders against I-JEPA (a teammate is comparing encoders).

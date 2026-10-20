@@ -13,17 +13,16 @@ import gymnasium as gym
 import mani_skill.envs  # noqa: F401  registers the ManiSkill envs with gymnasium
 import numpy as np
 import torch
-import wandb
 from safetensors.torch import save_model
 from transformers import TrainerCallback
 
-from ragmani import data, wandb_metrics
+import wandb
+from ragmani import data, visuals, wandb_metrics
 from ragmani.config import cli, load_run
-from ragmani.wandb_metrics import key
 from ragmani.data.retriever import Retriever
 from ragmani.data.trajectories import Trajectories
 from ragmani.models import ENCODERS, RagAct
-from ragmani import visuals
+from ragmani.wandb_metrics import key
 
 EPISODES = 20
 MAX_STEPS = 128   # the longest demo; test.py allowed 400

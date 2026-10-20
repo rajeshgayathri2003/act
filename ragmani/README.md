@@ -1,6 +1,6 @@
 # ragmani
 
-Retrieval-augmented ACT on ManiSkill: encode demos into embeddings, train a policy that retrieves demo steps and attends over them, then score it in the sim. It restructures the `rag_model.py` pipeline; the files at the repo root are untouched, and ragmani reads their datasets.
+Retrieval-augmented ACT on ManiSkill: encode demos into embeddings, train a policy that retrieves demo steps and attends over them, then score it in the sim. It restructures the `rag_model.py` pipeline; the files at the repo root are untouched, and datasets from their encoders need re-encoding with `ragmani.data.encode`.
 
 ## Setup
 
@@ -35,7 +35,7 @@ Judge a change by simulate, not eval loss: the arm's state alone predicts most o
 
 ## Model
 
-Image and state MLPs encode the frame and `QueryMLP` turns it into orthogonal queries. Each query searches the memory with `W q` and attends over the rows it fetched with `W^T W q`, so the action loss trains the search. A row's key is its image and state features, its value what its demo did next. The ACT-style head reads the attention's tokens and the raw state. Rows from the frame's own demo are never retrieved.
+Image and state MLPs encode the frame and `QueryMLP` turns it into orthogonal queries. Each query searches the memory with `W q` and attends over the rows it fetched with `W^T W q`, so the action loss trains the search. A row's key is its image and state features, its value what its demo did next. The ACT-style head reads the attention's tokens and combined, the image and state features, detached so the encoders learn only through retrieval. Rows from the frame's own demo are never retrieved. With several tasks, every task's rows share one memory.
 
 ## Layout
 
@@ -47,5 +47,5 @@ Image and state MLPs encode the frame and `QueryMLP` turns it into orthogonal qu
 | `train.py` | training and its bookkeeping |
 | `wandb_metrics.py` | the W&B run, what each metric means, and the W&B Trainer callbacks |
 | `simulate.py` | closed-loop simulation |
-| `launch.py`, `nautilus.sh` | queue a run as a Nautilus Job, and the Job's command |
+| `launch.py`, `nautilus.sh`, `agent.py` | queue a run as a Nautilus Job, the Job's command, and the launch agent that runs queued Jobs |
 | `visuals.py` | frames, captions and video |
