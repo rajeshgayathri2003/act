@@ -9,6 +9,9 @@ resolution-markers = [
     "sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 
+[manifest]
+overrides = [{ name = "mplib", marker = "platform_machine == 'x86_64'" }]
+
 [[package]]
 name = "absl-py"
 version = "2.5.1"
@@ -64,6 +67,8 @@ dependencies = [
     { name = "pyquaternion" },
     { name = "pyyaml" },
     { name = "safetensors" },
+    { name = "sapien", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' or sys_platform != 'linux'" },
+    { name = "sapien", version = "3.0.3", source = { url = "https://github.com/haosulab/SAPIEN/releases/download/3.0.3/sapien-3.0.3-cp311-cp311-linux_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
     { name = "seaborn" },
     { name = "sentencepiece" },
     { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
@@ -109,6 +114,8 @@ requires-dist = [
     { name = "pyquaternion" },
     { name = "pyyaml" },
     { name = "safetensors" },
+    { name = "sapien", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'", specifier = "==3.0.3" },
+    { name = "sapien", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'", url = "https://github.com/haosulab/SAPIEN/releases/download/3.0.3/sapien-3.0.3-cp311-cp311-linux_aarch64.whl" },
     { name = "seaborn" },
     { name = "sentencepiece" },
     { name = "torch", marker = "sys_platform != 'linux'" },
@@ -1471,12 +1478,13 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "imageio", extra = ["ffmpeg"] },
     { name = "ipython" },
-    { name = "mplib", marker = "sys_platform == 'linux'" },
+    { name = "mplib", marker = "platform_machine == 'x86_64'" },
     { name = "numpy" },
     { name = "nvidia-ml-py" },
     { name = "pytorch-kinematics" },
     { name = "pyyaml" },
-    { name = "sapien", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "sapien", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or sys_platform == 'darwin' or sys_platform == 'win32'" },
+    { name = "sapien", version = "3.0.3", source = { url = "https://github.com/haosulab/SAPIEN/releases/download/3.0.3/sapien-3.0.3-cp311-cp311-linux_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
     { name = "scipy" },
     { name = "tabulate" },
     { name = "tqdm" },
@@ -2541,6 +2549,12 @@ wheels = [
 name = "sapien"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine != 'aarch64' and sys_platform == 'linux'",
+    "sys_platform == 'win32'",
+    "sys_platform == 'darwin'",
+    "sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'",
+]
 dependencies = [
     { name = "importlib-resources" },
     { name = "lxml" },
@@ -2556,6 +2570,41 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ea/5f/bdabddd1bcb8d09fdbd5359115dff8bba7fc104a5ffccadba296231cc0bd/sapien-3.0.3-cp311-cp311-macosx_12_0_universal2.whl", hash = "sha256:1ac4f940238d79f239bd0d34d406d8b1bd9954e13c8464f93fe517ef5b20f9e1", size = 35619514, upload-time = "2026-03-10T08:34:14.302Z" },
     { url = "https://files.pythonhosted.org/packages/8e/dd/78e25ff9733bbe0dcdc5ea6c06e2dbeb73e696f0f43e946711110fa279fc/sapien-3.0.3-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:9a5eb4dc2efdf9b451cdd77a955d45578a5d81474d4e98089bbc36eeb4a07e45", size = 51304469, upload-time = "2026-03-10T08:34:25.424Z" },
     { url = "https://files.pythonhosted.org/packages/80/36/a19e2f5ddebfb8ca61b2ddab4c60c154853500a5b841c4cdadab5a0cf28d/sapien-3.0.3-cp311-cp311-win_amd64.whl", hash = "sha256:5b93861445c92ebffd27848bed9e560a56f5cd6679f9908e002bc4deb64ebf82", size = 44604849, upload-time = "2026-03-10T08:34:33.385Z" },
+]
+
+[[package]]
+name = "sapien"
+version = "3.0.3"
+source = { url = "https://github.com/haosulab/SAPIEN/releases/download/3.0.3/sapien-3.0.3-cp311-cp311-linux_aarch64.whl" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "importlib-resources" },
+    { name = "lxml" },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "opencv-python" },
+    { name = "pyperclip" },
+    { name = "requests" },
+    { name = "setuptools" },
+    { name = "transforms3d" },
+]
+wheels = [
+    { url = "https://github.com/haosulab/SAPIEN/releases/download/3.0.3/sapien-3.0.3-cp311-cp311-linux_aarch64.whl", hash = "sha256:db85aafb2876a2dafc7cd25f37139db8479dcb35c42e5004c0cd78b1f32f8b41" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "importlib-resources" },
+    { name = "lxml" },
+    { name = "networkx" },
+    { name = "numpy", specifier = ">=1.17" },
+    { name = "opencv-python", specifier = ">=4.0" },
+    { name = "pyperclip" },
+    { name = "requests", specifier = ">=2.22" },
+    { name = "setuptools" },
+    { name = "transforms3d", specifier = ">=0.3" },
 ]
 
 [[package]]
