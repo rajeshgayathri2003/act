@@ -14,14 +14,16 @@ STEP, EPOCH = "train/global_step", "train/epoch"
 METRICS = {  # name: (meaning, x-axis, summary)
   STEP: ("Optimizer steps so far.", None, None),
   EPOCH: ("Passes over the training data so far.", None, None),
-  "train/loss": ("What training minimizes. action_l1 + pad_weight * pad_bce.", STEP, None),
+  "train/loss": ("What training minimizes. action_l1 + pad_weight * pad_bce, or action_ce in place of action_l1 with the codebook head.", STEP, None),
   "train/action_l1": ("How far predicted actions are from the demo's; 0 is perfect. Mean |predicted - demo| over the chunk's steps before the demo ends, each action dimension divided by its std.", STEP, None),
+  "train/action_ce": ("Codebook head only: how well the predicted bins match the demo's actions. Cross-entropy against each action dimension's two-hot code over the chunk's steps before the demo ends; ln(bins) is uniform guessing.", STEP, None),
   "train/pad_bce": ("How well it predicts that the demo has ended. Binary cross-entropy over every chunk step.", STEP, None),
   "train/grad_norm": ("How big the gradient is; spikes mean unstable training. L2 norm of all gradients, before clipping.", STEP, None),
   "train/learning_rate": ("The learning rate at this step.", STEP, None),
   "eval/loss": ("train/loss on held-out demos the model never trains on. The summary keeps the lowest.", STEP, "min"),
   "eval/action_l1": ("train/action_l1 on held-out demos.", STEP, None),
   "eval/pad_bce": ("train/pad_bce on held-out demos.", STEP, None),
+  "eval/action_ce": ("train/action_ce on held-out demos.", STEP, None),
   "eval/runtime": ("Seconds one eval took.", STEP, None),
   "eval/samples_per_second": ("Rows per second during eval.", STEP, None),
   "eval/steps_per_second": ("Batches per second during eval.", STEP, None),
@@ -67,6 +69,7 @@ def start(c, run_dir, attach, config=None, stop=None):
     wandb_id.write_text(run.id)  # simulate reattaches to this run
     metrics = {**{key(section, c.tasks, task, name): entry for task in c.tasks for (section, name), entry in TASK_METRICS.items()}, **METRICS}
     if len(c.tasks) == 1: del metrics["retrieval/task_match"]  # one task always matches
+    if c.model.action_head != "codebook": del metrics["train/action_ce"], metrics["eval/action_ce"]  # only the codebook head has bin logits
     for name, (_, axis, summary) in metrics.items(): run.define_metric(name, step_metric=axis, summary=summary, hidden=name in (STEP, EPOCH) or None)
     if run_id is None: run.log({"about/metrics": wandb.Table(columns=["metric", "meaning"], data=[[name, meaning] for name, (meaning, _, _) in metrics.items()])})
     yield run

@@ -55,12 +55,12 @@ class QueryMLP(nn.Module):
     stack = torch.stack([channel(x) for channel in self.channels], dim=1)
     return orthogonalize(stack)
 
-def orthogonalize(vectors):
-  """Gram-Schmidt across the query axis of (B, queries, D): each query loses its projection onto the ones before it."""
+def orthogonalize(vectors, eps=1e-6):
+  """Gram-Schmidt across the query axis of (B, queries, D): each query loses its projection onto the ones before it; eps keeps a collapsed query from dividing by zero."""
   basis = []
   for vector in vectors.unbind(dim=1):
     orthogonal = vector
-    for previous in basis: orthogonal = orthogonal - (vector * previous).sum(-1, keepdim=True) / (previous * previous).sum(-1, keepdim=True) * previous
+    for previous in basis: orthogonal = orthogonal - (vector * previous).sum(-1, keepdim=True) / ((previous * previous).sum(-1, keepdim=True) + eps) * previous
     basis.append(orthogonal)
   return torch.stack(basis, dim=1)
 
@@ -135,7 +135,7 @@ class RagAct(nn.Module):
 
     # encode the observation, then make one orthogonal query per channel
     combined = torch.cat([self.image_mlp(image_emb), self.state_mlp(state)], dim=-1)  # (B, image_out + state_out = d_key)
-    q_stack = self.query_mlp(combined) # (B, n_queries, d_key)
+    q_stack = self.query_mlp(combined) # (B, n_queries, d_hidden)
 
     # retrieve step
     q_fetch = self.query_fetch(q_stack) # W q: (B, n_queries, d_image)

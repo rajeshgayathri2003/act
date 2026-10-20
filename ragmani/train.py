@@ -99,7 +99,7 @@ class RagActTrainer(Trainer):
       })
 
     action_loss = "action_ce" if logits is not None and model.training else "action_l1"  # eval_loss stays L1, so best/ compares across either head
-    loss = losses[action_loss] + self.pad_weight * losses["pad_bce"]
+    loss = losses[action_loss] + self.c.train.pad_weight * losses["pad_bce"]
     return (loss, {"action": pred_action, "is_pad": pred_pad}) if return_outputs else loss
 
   def evaluate(self, *args, **kwargs):
