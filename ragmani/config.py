@@ -14,7 +14,7 @@ from torch import nn
 from transformers import SchedulerType
 from tyro.conf import EnumChoicesFromValues
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "../data")).resolve()  # every task's demos and dataset; set in .env, or by nautilus.sh to the volume's
+DATA_DIR = Path(os.environ.get("DATA_DIR", "../data")).resolve()  # every task's demos and dataset; set in .env, or by queue.yaml in a Job
 
 
 class Activation(StrEnum):
@@ -133,7 +133,6 @@ class TrainConfig:
   save_limit: int = 3
   resume: bool = False  # continue from the run folder's latest checkpoint and W&B run, if any
   log_steps: int = 100
-  dataloader_workers: int = 4
 
   simulate_epochs: int = 5  # 0 turns sim checks off
   simulate_episodes: int = 10  # layouts scored per check, which picks best_success

@@ -62,10 +62,6 @@ class Best(TrainerCallback):
     state.save_to_json(str(self.directory / "trainer_state.json"))
 
 
-def collate(rows):
-  return {key: torch.stack([row[key] for row in rows]) for key in COLUMNS}
-
-
 class RagActTrainer(Trainer):
   """Runs RagAct with the retriever: the loss is the action L1 on the demo's real steps plus the end-of-demo BCE."""
 
@@ -125,6 +121,7 @@ def main(c):
   # retrieval memory and model
   device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
   retriever = Retriever(train_rows, c.retrieval, device)  # memory is training rows only
+  rows = {key: value.to(device) for key, value in dataset[:].items()}  # every row on the GPU once, so a batch is an index into them
   c.model.d_image = train_rows[0]["image_emb"].shape[-1]
   model = RagAct(c.model)
 
@@ -160,8 +157,7 @@ def main(c):
     report_to="wandb",  # the Trainer logs into the run opened below
     run_name=c.run_dir.name,
     remove_unused_columns=False,
-    dataloader_num_workers=c.train.dataloader_workers,
-    dataloader_pin_memory=device == "cuda",
+    dataloader_pin_memory=False,  # batches are already on the device
     seed=c.train.seed,
   )
 
@@ -173,9 +169,9 @@ def main(c):
   trainer = RagActTrainer(
     model=model,
     args=arguments,
-    data_collator=collate,
-    train_dataset=train_rows,
-    eval_dataset=eval_rows,
+    data_collator=lambda indices: {key: value[torch.as_tensor(indices, device=device)] for key, value in rows.items()},
+    train_dataset=np.flatnonzero(~is_held_out).tolist(),  # row numbers; the collator gathers each batch on the device
+    eval_dataset=np.flatnonzero(is_held_out).tolist(),
     callbacks=callbacks,
     retriever=retriever,
     c=c,
