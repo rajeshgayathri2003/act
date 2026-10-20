@@ -182,6 +182,18 @@ class RagAct(nn.Module):
     """The head's TwoHotHead, or None with the regression head."""
     return self.head.codebook
 
+  @staticmethod
+  def action_codebook(config):
+    """With the codebook head, the decoder latent straight to logits over fixed bins per action dimension, decoded to their expected value (DreamerV3)."""
+    if config.action_head != "codebook": return None
+    codebook = config.codebook
+    return TwoHotHead(config.d_model, config.action_dim, codebook.bins, codebook.low, codebook.high, symlog=codebook.symlog)
+
+  @property
+  def codebook(self):
+    """The head's TwoHotHead, or None with the regression head."""
+    return self.head.codebook
+
   @classmethod
   def load(cls, checkpoint_dir, config):
     """A checkpoint saved by ragmani's trainer."""
