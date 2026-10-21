@@ -3,7 +3,7 @@
 # Launch adds the image (docker/Dockerfile: the environment, uv and weights preinstalled), the code at the run's commit, W&B's env, and `uv run ... ragmani.launch job`.
 namespace: cogrob
 metadata:
-  name: $user-ragmani-${run_id}     # the W&B run's id, as in its URL; launch.py --run-id makes it the run's name
+  name: $user-ragmani-${run_id}     # the W&B run's id, which launch sets to the run's name
   labels:
     user: $user
 spec:
@@ -68,12 +68,12 @@ spec:
               cpu: "4"
               memory: 32Gi
               ephemeral-storage: 10Gi     # the environment is in the image; checkpoints and videos go to the volume
-              nvidia.com/gpu: 1
+              nvidia.com/gpu: "1"
             limits:                       # NRP wants limits within 20% of requests
               cpu: "4"
               memory: 32Gi
               ephemeral-storage: 12Gi
-              nvidia.com/gpu: 1
+              nvidia.com/gpu: "1"
           volumeMounts:
             - name: dshm
               mountPath: /dev/shm

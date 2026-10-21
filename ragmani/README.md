@@ -26,9 +26,9 @@ On aarch64 Linux (sparky), PyPI has no GPU FAISS: build it once with `bash docke
 ## Workflow
 
 ```sh
-uv run python -m ragmani.data.encode push_cube                   # demos -> encoded dataset
-uv run python -m ragmani.train push_cube --run_dir runs/my_run   # any field as a flag, e.g. --train.lr 3e-4
-uv run python -m ragmani.simulate runs/my_run --checkpoint best  # success rate and video
+uv run python -m ragmani.data.encode push_cube # demos -> encoded dataset
+uv run python -m ragmani.train push_cube --run_dir runs/my_run # any field as a flag, e.g. --train.lr 3e-4
+uv run python -m ragmani.simulate runs/my_run --checkpoint best # success rate and video
 ```
 
 The first word is a preset from `config.py`'s `PRESETS`; `<preset> --help` lists every field.

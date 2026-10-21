@@ -42,8 +42,9 @@ run cmake --build "$work/build" --parallel "$(nproc)" --target swigfaiss "swigfa
 
 # the package setup.py writes is tagged for any platform; tag it for this one, so no other machine installs it
 run uv build --wheel "$work/build/faiss/python" --out-dir wheels
+tag="$("$python" -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"  # the interpreter the module was built for
 for wheel in wheels/faiss-*-py3-none-any.whl; do
-  [[ -e "$wheel" || -n "$dry_run" ]] || continue
-  run uvx --from wheel wheel tags --remove --python-tag cp311 --abi-tag cp311 --platform-tag "linux_$(uname -m)" "$wheel"
+  [[ -e "$wheel" || -n "$dry_run" ]] || { echo "no wheels/faiss-*-py3-none-any.whl was built" >&2; exit 1; }
+  run uvx --from wheel wheel tags --remove --python-tag "$tag" --abi-tag "$tag" --platform-tag "linux_$(uname -m)" "$wheel"
 done
 run ls wheels

@@ -177,7 +177,7 @@ def main(c):
     c=c,
   )
 
-  # the run folder; simulate rebuilds the model from the c W&B stores, whatever the presets say later
+  # the run folder
   run_dir = c.run_dir
   run_dir.mkdir(parents=True, exist_ok=True)
 

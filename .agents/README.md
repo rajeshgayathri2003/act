@@ -27,7 +27,7 @@ A note that gets long can be split into a folder of the same name, one file per 
 
 ## How the notes reach an agent
 
-The tooling is one more `.agents`, installed once per machine at `~/.agents` from [Ocramaru/.agents](https://github.com/Ocramaru/.agents). It holds the shared standards and the hooks. When an agent edits a file here, the hooks find every `.agents/` above that file and hand the agent the notes and standards that govern it: `context.md` in full, and the other notes by name so it can open them when it needs to. Claude Code gets this through its hooks; Codex, Gemini and other agents are pointed at the same files through their instructions file.
+The tooling is one more `.agents`, installed once per machine (see [Using it](#using-it)). It holds the shared standards and the hooks. When an agent edits a file here, the hooks find every `.agents/` above that file and hand the agent the notes and standards that govern it: `context.md` in full, and the other notes by name so it can open them when it needs to. Claude Code gets this through its hooks; Codex, Gemini and other agents are pointed at the same files through their instructions file.
 
 Without the tooling, these are plain markdown and read fine.
 

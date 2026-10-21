@@ -35,7 +35,7 @@ class TaskConfig:
   traj: Path  # its demos, under DATA_DIR: the controller, and the frames encode renders
   dataset: Path  # its encoded rows, under DATA_DIR
 
-  def __post_init__(self):  # this allows us to override dataset location | e.g. --tasks.0.dataset /tmp/test_dataset
+  def __post_init__(self):  # DATA_DIR-relative paths become absolute; a flag such as --tasks.0.dataset /tmp/test_dataset replaces either
     self.traj = (DATA_DIR / self.traj).resolve()
     self.dataset = (DATA_DIR / self.dataset).resolve()
 

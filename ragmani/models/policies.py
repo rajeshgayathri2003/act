@@ -16,27 +16,27 @@ from ragmani.data.retriever import Retriever
 
 class ImageMLP(nn.Module):
   def __init__(self, c: ModelConfig):
-      super().__init__()
-      layer_sizes = [c.d_image, *c.image_layers, c.d_image_out]
-      self.layers = nn.Sequential()
-      for dims in zip(layer_sizes, layer_sizes[1:]):
-                  if self.layers: self.layers.append(c.activation())  # skips first
-                  self.layers.append(nn.Linear(*dims))
+    super().__init__()
+    layer_sizes = [c.d_image, *c.image_layers, c.d_image_out]
+    self.layers = nn.Sequential()
+    for dims in zip(layer_sizes, layer_sizes[1:]):
+      if self.layers: self.layers.append(c.activation())  # skips first
+      self.layers.append(nn.Linear(*dims))
 
-  def forward(self, x): 
-      return self.layers(x)
+  def forward(self, x):
+    return self.layers(x)
 
 class StateMLP(nn.Module):
   def __init__(self, c: ModelConfig):
-      super().__init__()
-      layer_sizes = [c.d_state, *c.state_layers, c.d_state_out]
-      self.layers = nn.Sequential()
-      for dims in zip(layer_sizes, layer_sizes[1:]):
-          if self.layers: self.layers.append(c.activation())  # skips first
-          self.layers.append(nn.Linear(*dims))
+    super().__init__()
+    layer_sizes = [c.d_state, *c.state_layers, c.d_state_out]
+    self.layers = nn.Sequential()
+    for dims in zip(layer_sizes, layer_sizes[1:]):
+      if self.layers: self.layers.append(c.activation())  # skips first
+      self.layers.append(nn.Linear(*dims))
 
-  def forward(self, x): 
-      return self.layers(x)
+  def forward(self, x):
+    return self.layers(x)
 
 class QueryMLP(nn.Module):
   def __init__(self, c: ModelConfig):
@@ -110,9 +110,8 @@ class RagAct(nn.Module):
 
     self.query_fetch = nn.Linear(c.d_hidden, c.d_image, bias=False)  # W: queries to image embedding's space
     self.query_attention = nn.MultiheadAttention(c.d_hidden, c.n_attn_heads, kdim=c.d_key, vdim=c.d_action + c.d_state, batch_first=True)
-    # note for vdim I did state + action versus we had 2*state + action before
 
-    self.head = ActionHead(c) # does attention with nn.Transformer and outputs into action space
+    self.head = ActionHead(c)
 
     self.state = StatDict(c.d_state)
     self.action = StatDict(c.d_action)
@@ -134,7 +133,6 @@ class RagAct(nn.Module):
     # retrieve step
     q_fetch = self.query_fetch(q_stack) # W q: (B, n_queries, d_image)
     topk_idx = retriever.search(q_fetch, self.c.n_neighbours, exclude)  # (B, n_queries, n_neighbours), best first
-    # if self.training: topk_idx = topk_idx.gather(-1, torch.rand(topk_idx.shape, device=topk_idx.device).argsort(dim=-1))  # shuffled, so training keeps a random few, like dropout
     idx = topk_idx[..., :self.c.n_keep].flatten(1)  # every query's rows together
     mem = retriever.gather(idx)
 

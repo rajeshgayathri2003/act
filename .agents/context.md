@@ -18,8 +18,8 @@ A lab-shared fork of tonyzhaozh/act. `ragmani/` restructures the RAG pipeline ar
 - A run's config lives in W&B; `simulate` reloads it via the run folder's `wandb_id`. Offline runs cannot be reloaded until synced.
 - Before a long run, or after changing training code, smoke it locally with `--train.epochs 1 --train.simulate_epochs 1 --train.simulate_episodes 2`.
 - Judge a change by simulate, not eval loss.
+- Policies find task goals from images alone: never feed ManiSkill's `goal_pos`, even for PickCube, where it is in every observation mode. A goal the model cannot see is fixed in the image path (spatial tokens, another camera, a workspace crop), not the state.
 - Checkpoints from `rag_model.py` or from before the `simplify` rework do not load into `RagAct`, and datasets from its encoders (`ijepa_encoder.py`, `data_encoder*.py`) do not load either; re-encode them with `ragmani.data.encode`.
 - Dataset and live frames must use the same encoder settings, `encoder.precision` included; changing one means re-encoding.
 - Simulate's reported scores use seed 42's layouts, training checks `CHECK_SEED`'s, so `best_success` never sees the reported layouts.
-- Python: two-space indent, no `Author:` line ([[python]]).
 - `.agents/.local/` is per-machine and gitignored.
