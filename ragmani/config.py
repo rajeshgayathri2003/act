@@ -199,6 +199,7 @@ TRAIN = TrainConfig(
 
 PRESETS = {
   "push_cube": ("PushCube-v1, end-effector delta-position control, I-JEPA image embeddings, constant lr 3e-5", Config(train=TRAIN)),
+  "pick_cube": ("PickCube-v1, end-effector delta-position control, I-JEPA image embeddings, constant lr 3e-5", Config(name="pick_cube", tasks=[PICK_CUBE], train=TRAIN, run_dir=Path("runs/pick_cube"))),
   "push_pick_cube": ("PushCube-v1 and PickCube-v1 in one model: both tasks' demos fill one memory, and simulate shares its episodes between them", Config(name="push_pick_cube", tasks=[PUSH_CUBE, PICK_CUBE], train=TRAIN, run_dir=Path("runs/push_pick_cube"))),
 }
 
