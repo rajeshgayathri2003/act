@@ -6,7 +6,7 @@ kind: context
 
 # Context
 
-A lab-shared fork of tonyzhaozh/act. `ragmani/` restructures the RAG pipeline around `rag_model.py`; the root files (`rag_model.py`, `rag_retrieval/`, `ijepa_encoder.py`, `test.py`, the ALOHA sim) stay as they are.
+A lab-shared fork of tonyzhaozh/act. `ragmani/` restructures the RAG pipeline around `rag_model.py`; the root files (`rag_model.py`, `rag_retrieval/`, `ijepa_encoder.py`, `test.py`, the ALOHA sim) stay as they are, but `pyproject.toml` installs only what ragmani uses, so their `detr` is not a dependency.
 
 - Run from `act/` as modules: `uv run python -m ragmani.<module>`. Imports are absolute.
 - Settings are typed dataclasses in `ragmani/config.py`, one section per class; experiments are `PRESETS`, overridden by tyro flags after the preset (`push_cube --train.lr 3e-4`, `--tasks.1.dataset ...`). Choices are name tables (`ENCODERS`, `SPLITS`, `EXECUTIONS`) or enums, not `if` chains.

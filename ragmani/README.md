@@ -1,6 +1,6 @@
 # ragmani
 
-Retrieval-augmented ACT on ManiSkill: encode demos into embeddings, train a policy that retrieves demo steps and attends over them, then score it in the sim. It restructures the `rag_model.py` pipeline; the files at the repo root are untouched, and datasets from their encoders need re-encoding with `ragmani.data.encode`.
+Retrieval-augmented ACT on ManiSkill: encode demos into embeddings, train a policy that retrieves demo steps and attends over them, then score it in the sim. It restructures the `rag_model.py` pipeline. The files at the repo root are untouched but not installed: `pyproject.toml` lists only what ragmani uses, so their `detr` package needs `uv pip install -e detr`, and datasets from their encoders need re-encoding with `ragmani.data.encode`.
 
 [Setup](#setup) · [Workflow](#workflow) · [Launching on Nautilus](#launching-on-nautilus) · [Model](#model) · [Layout](#layout)
 
@@ -19,7 +19,9 @@ Run every command from `act/`.
 | NVIDIA's Vulkan driver, `NVIDIA_DRIVER_CAPABILITIES` including `graphics` | ManiSkill renders through Vulkan |
 | `DATA_DIR` (default `../data`) | each task's demos (`<env>/trajectory...h5` and its `.json`) and encoded dataset |
 | `WANDB_API_KEY` or `wandb login` | logging; simulate also reloads a run's config from W&B |
-| `HF_HOME`, optionally | the image encoder's cache; on Kubernetes keep it, the venv and `UV_CACHE_DIR` on local disk |
+| `HF_HOME`, optionally | the image encoder's cache |
+
+On aarch64 Linux (sparky), PyPI has no GPU FAISS: build it once with `bash docker/faiss.sh` (needs `libopenblas-dev`) and `uv pip install --reinstall --no-deps wheels/faiss-*.whl`. Use `uv sync --inexact` there afterwards, since a plain `uv sync` removes it. NVIDIA's aarch64 cusparselt wheel records a wrong platform tag, so uv reinstalls it on every sync until it is corrected: `sed -i 's/manylinux2014_sbsa$/manylinux2014_aarch64/' .venv/lib/python3.11/site-packages/nvidia_cusparselt_cu13-*.dist-info/WHEEL`.
 
 ## Workflow
 

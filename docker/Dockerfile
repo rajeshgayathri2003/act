@@ -39,7 +39,6 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 # the locked environment, so a Job's `uv run --frozen` finds it installed and starts at once
 WORKDIR /opt/act
 COPY pyproject.toml uv.lock ./
-COPY detr detr
 # in four layers, none too large for NRP's registry to take in one upload: CUDA's libraries, cuDNN, torch, then the rest; each sync installs only what the others leave out
 RUN uv export --frozen --no-hashes --no-header --no-annotate --format requirements-txt | sed -n 's/^\([A-Za-z0-9_][A-Za-z0-9_.-]*\)[ =@;].*/\1/p' > /tmp/packages
 RUN --mount=type=cache,target=/root/.cache/uv UV_COMPILE_BYTECODE=0 uv sync --frozen --inexact $( (grep -vE '^nvidia-' /tmp/packages; grep -E '^nvidia-cudnn' /tmp/packages) | sed 's/^/--no-install-package /')
