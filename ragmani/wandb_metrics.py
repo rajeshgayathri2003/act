@@ -46,7 +46,6 @@ METRICS = {  # name: (meaning, x-axis, summary)
 }
 TASK_METRICS = {  # (section, name): (meaning, x-axis, summary), one per task
   ("check", "success_rate"): ("check/success_rate for this task only.", EPOCH, "max"),
-  ("check", "video"): ("One check episode, on the same layout every check; not scored.", EPOCH, None),
   ("check", "grid"): ("Every scored check episode side by side: green border solved, red failed.", EPOCH, None),
   ("sim", "success_rate"): ("sim/success_rate for this task only.", EPOCH, "max"),
   ("sim", "grid"): ("Every after-training episode of this task: green border solved, red failed.", EPOCH, None),

@@ -1,0 +1,6 @@
+# the build context is act/, which holds runs and a venv; the image takes only these
+*
+!pyproject.toml
+!uv.lock
+!detr
+!docker

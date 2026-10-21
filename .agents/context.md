@@ -10,7 +10,8 @@ A lab-shared fork of tonyzhaozh/act. `ragmani/` restructures the RAG pipeline ar
 
 - Run from `act/` as modules: `uv run python -m ragmani.<module>`. Imports are absolute.
 - Settings are typed dataclasses in `ragmani/config.py`, one section per class; experiments are `PRESETS`, overridden by tyro flags after the preset (`push_cube --train.lr 3e-4`, `--tasks.1.dataset ...`). Choices are name tables (`ENCODERS`, `SPLITS`, `EXECUTIONS`) or enums, not `if` chains.
-- Task paths sit under `DATA_DIR` (default `../data`); the model cache is `HF_HOME`. `nautilus.sh` sets both for Jobs; `python -m ragmani.launch <run> --preset <name> [flags]` queues one, and `python -m ragmani.agent` (wandb launch-agent's flags) runs the agent that turns queued runs into Jobs.
+- Task paths sit under `DATA_DIR` (default `../data`); the model cache is `HF_HOME`. In a Job, `ragmani/queue.yaml` sets both, plus `RUNS_DIR`, on the queue's volume; the code holds no Nautilus paths.
+- `python -m ragmani.launch` does all of Nautilus: `setup` builds your queue `ragmani-$RAGMANI_USER` from `queue.yaml` and `.env`, `agent` runs its agent, `<run> --preset <name> [flags]` queues a run, and `job` starts it inside the pod (README, Launching on Nautilus).
 - `tasks` trains one model on every task's rows in one memory; `data.combine` adds `task` and `demo` columns; simulate shares a fixed episode count across tasks.
 - Models only compute; losses and logging live in `train.py`.
 - Runs open W&B through `wandb_metrics.start`; a new metric gets one line in `wandb_metrics.METRICS` (per-task ones in `TASK_METRICS`, named through `wandb_metrics.key`).
