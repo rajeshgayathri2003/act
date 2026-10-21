@@ -70,6 +70,7 @@ class CodebookConfig:
   low: float = -5.0  # bin range, in standardized action units when model.normalize is on, raw ones otherwise; actions outside clamp to the ends
   high: float = 5.0
   symlog: bool = True  # True spaces the bins evenly in symlog space, finer near zero
+  scale: float = 0.01  # symlog's linear-to-log crossover: bins are near-uniform below about scale and spread geometrically above it
 
 
 @dataclass

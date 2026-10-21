@@ -79,7 +79,7 @@ class ActionHead(nn.Module):
         dropout=c.dropout, batch_first=True))
 
     # the codebook decodes each action dimension from logits over fixed bins (DreamerV3); otherwise a linear layer regresses it
-    self.codebook = TwoHotHead(c.d_model, c.d_action, c.codebook.bins, c.codebook.low, c.codebook.high, symlog=c.codebook.symlog) if c.action_head == "codebook" else None
+    self.codebook = TwoHotHead(c.d_model, c.d_action, c.codebook.bins, c.codebook.low, c.codebook.high, symlog=c.codebook.symlog, scale=c.codebook.scale) if c.action_head == "codebook" else None
     self.action_out = nn.Linear(c.d_model, c.d_action) if self.codebook is None else None
     self.is_pad_out = nn.Linear(c.d_model, 1)
 
