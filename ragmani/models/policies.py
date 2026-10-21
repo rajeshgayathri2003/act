@@ -51,18 +51,8 @@ class QueryMLP(nn.Module):
       for _ in range(c.n_queries)
     )
 
-  def forward(self, x):  # (B, combined) -> (B, n_queries, d_hidden)
-    stack = torch.stack([channel(x) for channel in self.channels], dim=1)
-    return orthogonalize(stack)
-
-def orthogonalize(vectors, eps=1e-6):
-  """Gram-Schmidt across the query axis of (B, queries, D): each query loses its projection onto the ones before it; eps keeps a collapsed query from dividing by zero."""
-  basis = []
-  for vector in vectors.unbind(dim=1):
-    orthogonal = vector
-    for previous in basis: orthogonal = orthogonal - (vector * previous).sum(-1, keepdim=True) / ((previous * previous).sum(-1, keepdim=True) + eps) * previous
-    basis.append(orthogonal)
-  return torch.stack(basis, dim=1)
+  def forward(self, x):  # (B, combined) -> (B, n_queries, d_hidden), each query free to point anywhere
+    return torch.stack([channel(x) for channel in self.channels], dim=1)
 
 
 class ActionHead(nn.Module):
@@ -70,7 +60,7 @@ class ActionHead(nn.Module):
     super().__init__()
     self.token_proj = nn.Linear(c.d_hidden, c.d_model)
     self.combined_proj = nn.Linear(c.d_key, c.d_model)
-    self.source_pos = nn.Embedding(c.n_queries + 1, c.d_model)  # one position per source token: the query tokens and the frame
+    self.source_pos = nn.Embedding(c.n_queries + 1, c.d_model)  # one position per source token: the query tokens and combined
     self.action_queries = nn.Embedding(c.chunk_len, c.d_model)  # one vector per step -> decoder maps to each action
 
     self.transformer = (Transformer(
@@ -122,6 +112,7 @@ class RagAct(nn.Module):
 
     self.state = StatDict(c.d_state)
     self.action = StatDict(c.d_action)
+    self.register_buffer("combined_mask_rate", torch.zeros(()))  # set by training, kept in checkpoints
 
   @classmethod
   def load(cls, checkpoint_dir, config):
@@ -133,7 +124,7 @@ class RagAct(nn.Module):
   def forward(self, image_emb, state, retriever: Retriever, exclude=None):
     state = self.state.standardize(state)
 
-    # encode the observation, then make one orthogonal query per channel
+    # encode the observation, then make one query per channel
     combined = torch.cat([self.image_mlp(image_emb), self.state_mlp(state)], dim=-1)  # (B, image_out + state_out = d_key)
     q_stack = self.query_mlp(combined) # (B, n_queries, d_hidden)
 
@@ -159,5 +150,6 @@ class RagAct(nn.Module):
       "retrieval/attn_entropy": -(attn_weight * attn_weight.clamp_min(1e-9).log()).sum(-1).mean().detach(),  # ln(rows) is uniform
     }
 
-    action, is_pad, self.action_logits = self.head(tokens, combined.detach()[:, None])  # the frame's image and state features, detached so the encoders learn only from retrieval; the logits are None without the codebook
+    if self.combined_mask_rate > 0: combined = combined * torch.bernoulli(1 - self.combined_mask_rate.expand(len(combined), 1))
+    action, is_pad, self.action_logits = self.head(tokens, combined[:, None])  # the logits are None without the codebook
     return action, is_pad.squeeze(-1), idx

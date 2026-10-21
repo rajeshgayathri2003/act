@@ -135,6 +135,8 @@ class TrainConfig:
   weight_decay: float = 1.0e-4
   max_grad_norm: float = 1.0  # 0 turns clipping off
   pad_weight: float = 1.0  # the end-of-demo loss, relative to the action loss
+  combined_start_at: float = 0.5  # share of training before the head sees combined
+  combined_warmup_by: float = 0.75  # share of training by which every row sees it
 
   split: Literal["frame", "episode"] = "episode"  # frame holds out random rows, episode whole demos
   eval_fraction: float = 0.2
@@ -148,6 +150,13 @@ class TrainConfig:
   simulate_epochs: int = 5  # 0 turns sim checks off
   simulate_episodes: int = 10  # layouts scored per check, which picks best_success
   simulate_after: SimulateAfterConfig = field(default_factory=SimulateAfterConfig)
+
+  def __post_init__(self):
+    if self.combined_warmup_by < self.combined_start_at:
+      raise ValueError(f"combined_warmup_by {self.combined_warmup_by} must not come before combined_start_at {self.combined_start_at}")
+
+  @property
+  def combined_warmup(self): return self.combined_warmup_by - self.combined_start_at
 
 
 @dataclass
