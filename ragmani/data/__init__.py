@@ -1,6 +1,7 @@
-from ragmani.data.dataset import load, statistics
+from ragmani.data.dataset import SPLITS, combine, statistics
 
 __all__ = [
-  "load",
+  "SPLITS",
+  "combine",
   "statistics",
 ]

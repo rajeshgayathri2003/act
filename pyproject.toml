@@ -7,7 +7,7 @@ dependencies = [
   "torch",
   "torchvision",
   "numpy",
-  "faiss-cpu; sys_platform != 'linux' or platform_machine != 'x86_64'",
+  "faiss-cpu; sys_platform != 'linux' or platform_machine != 'x86_64'", # the image and sparky install docker/faiss.sh's GPU build over it on aarch64
   "faiss-gpu; sys_platform == 'linux' and platform_machine == 'x86_64'", # CUDA 12 runtime wheels; no aarch64 GPU build
   "transformers",
   "accelerate>=0.26.0", # required by the HF Trainer in rag_model.py
@@ -15,6 +15,7 @@ dependencies = [
   "datasets",
   "h5py",
   "mani_skill",
+  "sapien==3.0.3", # mani_skill's simulator, listed so [tool.uv.sources] can give aarch64 its GitHub wheel
   "gymnasium",
   "mujoco==2.3.7", # ALOHA sim versions from README.md
   "dm_control==1.0.14",
@@ -30,9 +31,9 @@ dependencies = [
   "tqdm",
   "imageio[ffmpeg]", # ragmani's mp4 videos
   "safetensors", # ragmani saves and loads checkpoints with it
-  "detr",
   "pin>=4.1.0", # Pinocchio IK for pd_ee_delta_pos; SAPIEN's macOS wheel ships without it
   "wandb",
+  "tyro>=1.0.16",
 ]
 
 [dependency-groups]
@@ -40,9 +41,10 @@ launch = ["kubernetes-asyncio", "azure-identity", "azure-storage-blob", "azure-c
 
 [tool.uv]
 package = false
+override-dependencies = ["mplib; platform_machine == 'x86_64'"]  # mani_skill's motion planner (and its toppra), x86 wheels only and unused here
 
 [tool.uv.sources]
-detr = { path = "detr", editable = true }
+sapien = [{ url = "https://github.com/haosulab/SAPIEN/releases/download/3.0.3/sapien-3.0.3-cp311-cp311-linux_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" }]  # PyPI has no aarch64 wheel; its bundled librt needs pointing at the system one (haosulab/SAPIEN#284)
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 

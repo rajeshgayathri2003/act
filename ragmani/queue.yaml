@@ -1,0 +1,88 @@
+# Resource config of each person's W&B Launch queue ragmani-$user: the Job every queued run becomes.
+# `python -m ragmani.launch setup` fills $user, $volume and $wandb_secret from .env; ${run_id} is Launch's own, filled per run.
+# Launch adds the image (docker/Dockerfile: the environment, uv and weights preinstalled), the code at the run's commit, W&B's env, and `uv run ... ragmani.launch job`.
+namespace: cogrob
+metadata:
+  name: $user-ragmani-${run_id}     # the W&B run's id, as in its URL; launch.py --run-id makes it the run's name
+  labels:
+    user: $user
+spec:
+  backoffLimit: 3                   # restarts after a failure or a node reboot; train.resume continues from the latest checkpoint
+  activeDeadlineSeconds: 259200     # 72 h cap, counted from the Job's start
+  ttlSecondsAfterFinished: 259200   # keep the finished Job and its logs for 3 days
+  template:
+    metadata:
+      labels:
+        user: $user
+    spec:
+      restartPolicy: OnFailure
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:                 # Turing or newer, which torch cu130 needs; no A100/H100-class cards
+                      - NVIDIA-GeForce-RTX-2080-Ti
+                      - NVIDIA-TITAN-RTX
+                      - Quadro-RTX-6000
+                      - Quadro-RTX-8000
+                      - Tesla-T4
+                      - NVIDIA-A2
+                      - NVIDIA-A10
+                      - NVIDIA-A40
+                      - NVIDIA-L4
+                      - NVIDIA-L40
+                      - NVIDIA-L40S
+                      - NVIDIA-GeForce-RTX-3090
+                      - NVIDIA-GeForce-RTX-4090
+                      - NVIDIA-RTX-A4000
+                      - NVIDIA-RTX-A5000
+                      - NVIDIA-RTX-A6000
+                      - NVIDIA-RTX-4000-Ada-Generation
+                      - NVIDIA-RTX-5000-Ada-Generation
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:                 # nodes that failed ragmani pods
+                      - nautilus-ext-gpu01.fullerton.edu
+                      - ry-gpu-10.sdsc.optiputer.net
+                      - ry-gpu-16.sdsc.optiputer.net
+                      - ry-gpu-06.sdsc.optiputer.net
+      tolerations:
+        - key: nautilus.io/cogrob
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: train
+          env:
+            - name: WANDB_API_KEY         # your own secret, so a pod restarted after Launch drops its per-run secret still starts
+              valueFrom:
+                secretKeyRef:
+                  name: $wandb_secret
+                  key: api-key
+            - {name: DATA_DIR, value: /volume/data}   # the presets' task paths sit under it
+            - {name: RUNS_DIR, value: /volume/runs}   # run folders, so checkpoints outlive the pod
+          resources:
+            requests:
+              cpu: "4"
+              memory: 32Gi
+              ephemeral-storage: 10Gi     # the environment is in the image; checkpoints and videos go to the volume
+              nvidia.com/gpu: 1
+            limits:                       # NRP wants limits within 20% of requests
+              cpu: "4"
+              memory: 32Gi
+              ephemeral-storage: 12Gi
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: volume
+              mountPath: /volume          # DATA_DIR and RUNS_DIR above
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        - name: volume
+          persistentVolumeClaim:
+            claimName: $volume
